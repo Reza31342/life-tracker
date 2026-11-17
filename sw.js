@@ -1,5 +1,5 @@
 // Offline shell cache. Google Sheets API calls are never cached here.
-const CACHE = 'life-tracker-v1';
+const CACHE = 'life-tracker-v2';
 const ASSETS = ['./', './index.html', './styles.css', './app.js', './store.js', './manifest.webmanifest', './icon.svg'];
 
 self.addEventListener('install', (e) => {

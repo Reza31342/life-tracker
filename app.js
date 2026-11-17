@@ -1,62 +1,73 @@
 import { load, save, uid } from './store.js';
 
 let state = load();
-let pickTab = 'current';
-let openPickForm = null;
+const ui = { pickTab: 'current', pickKind: 'paper', openPick: null, taskTag: 'all', logSaved: '' };
 
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const pad = (n) => String(n).padStart(2, '0');
 const dateKey = (d = new Date()) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const clockOf = (d) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-const hhmm = (min) => `${pad(Math.floor(min / 60))}:${pad(min % 60)}`;
-const toMin = (t) => { const [h, m = 0] = t.split(':').map(Number); return h * 60 + m; };
-const fmtDur = (min) => `${Math.floor(min / 60)}h ${pad(min % 60)}m`;
-const avg = (a, d = 0) => (a.length ? (a.reduce((x, y) => x + y, 0) / a.length).toFixed(d) : '—');
+const hhmm = (m) => `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
+const fmtDur = (m) => `${Math.floor(m / 60)}h ${pad(m % 60)}m`;
+const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
+const fmt = (v, d = 0) => (v == null ? '—' : v.toFixed(d));
 const persist = () => save(state);
-const IMPORTANCE = ['MUST DO', 'High', 'Medium', 'Low'];
+const KINDS = [['paper', 'Papers'], ['podcast', 'Podcasts'], ['event', 'Events'], ['job', 'Jobs']];
+const kindLabel = (k) => (KINDS.find((x) => x[0] === k) || [k, k])[1];
+const IMP = ['MUST DO', 'High', 'Medium', 'Low'];
+const IMP_RANK = { 'MUST DO': 0, High: 1, Medium: 2, Low: 3 };
+
+const safeUrl = (u) => { try { const x = new URL(String(u)); return /^https?:$/.test(x.protocol) ? x.href : ''; } catch { return ''; } };
+const parseDay = (s) => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || ''); return m ? new Date(+m[1], +m[2] - 1, +m[3]) : null; };
+const daysTo = (s) => { const d = parseDay(s); if (!d) return null; const t = new Date(); t.setHours(0, 0, 0, 0); return Math.round((d - t) / 864e5); };
+const parseTags = (s) => String(s || '').split(/[\s,]+/).map((t) => t.replace(/^#/, '').trim().toLowerCase()).filter(Boolean);
+const isoWeek = (d) => {
+  const t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const day = t.getUTCDay() || 7;
+  t.setUTCDate(t.getUTCDate() + 4 - day);
+  const y = new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
+  return Math.ceil(((t - y) / 864e5 + 1) / 7);
+};
 
 function toast(msg) {
   const t = $('#toast');
   t.textContent = msg;
   t.classList.add('show');
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => t.classList.remove('show'), 1800);
+  toast.timer = setTimeout(() => t.classList.remove('show'), 1600);
 }
 
-// Sleep text like "23:30-7:15 +15-16": "+" marks a nap; the longest block is the main sleep.
+/* ---------- sleep, days, cigarettes ---------- */
+
+// "23:30-7:15 +15-16": "+" marks a nap; the longest block is the main sleep.
 function parseSleep(text) {
-  return String(text || '')
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((raw) => {
-      const nap = raw.startsWith('+');
-      const m = raw.replace(/^\+/, '').match(/^(\d{1,2}(?::\d{2})?)-(\d{1,2}(?::\d{2})?)$/);
-      if (!m) return null;
-      const start = toMin(m[1]);
-      const end = toMin(m[2]);
-      return { start, end, dur: (end - start + 1440) % 1440, nap };
-    })
-    .filter(Boolean);
+  return String(text || '').trim().split(/\s+/).filter(Boolean).map((raw) => {
+    const nap = raw.startsWith('+');
+    const m = raw.replace(/^\+/, '').match(/^(\d{1,2}(?::\d{2})?)-(\d{1,2}(?::\d{2})?)$/);
+    if (!m) return null;
+    const toMin = (t) => { const [h, mm = 0] = t.split(':').map(Number); return h * 60 + mm; };
+    const start = toMin(m[1]);
+    const end = toMin(m[2]);
+    return { start, end, dur: (end - start + 1440) % 1440, nap };
+  }).filter(Boolean);
 }
 
 function sleepSummary(text) {
   const blocks = parseSleep(text);
   if (!blocks.length) return null;
-  const total = blocks.reduce((sum, b) => sum + b.dur, 0);
+  const total = blocks.reduce((s, b) => s + b.dur, 0);
   const main = blocks.reduce((a, b) => (b.dur > a.dur ? b : a));
   return { total, main, naps: blocks.filter((b) => b !== main).length };
 }
 
 const todayRec = () => state.days[dateKey()] || {};
 const cigsOn = (key) => state.cigs.filter((c) => dateKey(new Date(c.at)) === key).sort((a, b) => a.at.localeCompare(b.at));
-const isCurrent = (p, today) => (!p.date || p.date >= today) && (!p.deadline || p.deadline >= today);
 
 function lastDays(n) {
   return Array.from({ length: n }, (_, i) => {
     const d = new Date();
-    d.setDate(d.getDate() - i);
+    d.setDate(d.getDate() - (n - 1 - i));
     return dateKey(d);
   });
 }
@@ -65,205 +76,271 @@ function weekStats() {
   const keys = lastDays(7);
   const recs = keys.map((k) => state.days[k]).filter(Boolean);
   const nums = (f) => recs.map((r) => r[f]).filter((v) => typeof v === 'number');
+  const sleepMins = keys.map((k) => sleepSummary(state.days[k]?.sleep)?.total).filter((v) => typeof v === 'number');
   const cigs = keys.reduce((n, k) => n + cigsOn(k).length, 0);
-  return { walk: nums('walkingMin'), energy: nums('energy'), cigsPerDay: (cigs / 7).toFixed(1) };
-}
-
-const stat = (label, value, sub) => `<div class="stat"><span class="label">${label}</span><strong>${value}</strong><span class="muted">${sub}</span></div>`;
-const radio = (name, value, checked) => `<label class="chip"><input type="radio" name="${name}" value="${value}"${checked ? ' checked' : ''}><span>${value}</span></label>`;
-const importanceSelect = (name, selected, extra = '') =>
-  `<select name="${name}">${IMPORTANCE.map((i) => `<option${i === selected ? ' selected' : ''}>${i}</option>`).join('')}${extra}</select>`;
-
-/* ---------- Today ---------- */
-
-function viewToday() {
-  const key = dateKey();
-  const today = new Date();
-  const r = todayRec();
-  const sl = sleepSummary(r.sleep);
-  const cigs = cigsOn(key);
-  const w = weekStats();
-  const first = cigs[0] ? new Date(cigs[0].at) : null;
-  let afterWake = '';
-  if (first && sl) afterWake = ` · ${fmtDur((first.getHours() * 60 + first.getMinutes() - sl.main.end + 1440) % 1440)} after waking`;
-  const gymType = r.gymType || 'none';
-
-  return `
-  <header class="page-head">
-    <p class="eyebrow">${today.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}</p>
-    <h1>Today</h1>
-    <p class="muted">Entry takes under 30 seconds</p>
-  </header>
-  <div class="stats">
-    ${stat('Sleep', sl ? fmtDur(sl.total) : '—', sl ? `main ${hhmm(sl.main.start)} to ${hhmm(sl.main.end)}${sl.naps ? ` · ${sl.naps} nap${sl.naps > 1 ? 's' : ''}` : ''}` : 'not logged yet')}
-    ${stat('Cigarettes', cigs.length, first ? `first at ${clockOf(first)}` : 'none yet')}
-    ${stat('Walking', r.walkingMin ?? '—', `week avg ${avg(w.walk)} min`)}
-    ${stat('Energy', r.energy ? `${r.energy} / 5` : '—', `week avg ${avg(w.energy, 1)}`)}
-  </div>
-  <section class="card cig">
-    <div>
-      <h2>Cigarettes</h2>
-      <p class="muted">${cigs.length} today · ${w.cigsPerDay} per day this week${afterWake}</p>
-    </div>
-    <div class="cig-actions">
-      <button class="big" type="button" data-act="cig-add">+1 cigarette</button>
-      <button class="ghost" type="button" data-act="cig-undo"${cigs.length ? '' : ' disabled'}>Undo last</button>
-    </div>
-  </section>
-  <form class="card" id="log-form">
-    <h2>Daily log</h2>
-    <label class="field">Sleep
-      <input name="sleep" required value="${esc(r.sleep)}" placeholder="23:30-7:15 (nap: +15-16)">
-    </label>
-    <label class="field">Walking (min)
-      <input name="walkingMin" type="number" min="0" required inputmode="numeric" value="${r.walkingMin ?? ''}">
-    </label>
-    <fieldset class="field">
-      <legend>Gym</legend>
-      <div class="seg">${['none', 'strength', 'cardio', 'other'].map((t) => radio('gymType', t, gymType === t)).join('')}</div>
-      <label class="field inline">Minutes <input name="gymMin" type="number" min="0" inputmode="numeric" value="${r.gymMin ?? ''}"></label>
-    </fieldset>
-    <fieldset class="field">
-      <legend>Energy</legend>
-      <div class="seg">${[1, 2, 3, 4, 5].map((n) => radio('energy', n, r.energy === n)).join('')}</div>
-    </fieldset>
-    <fieldset class="field">
-      <legend>Mood (optional)</legend>
-      <div class="seg">${[1, 2, 3, 4, 5].map((n) => radio('mood', n, r.mood === n)).join('')}</div>
-    </fieldset>
-    <label class="field">Note (optional)
-      <textarea name="note" rows="2" placeholder="Alcohol goes here">${esc(r.note)}</textarea>
-    </label>
-    <button class="primary" type="submit">Save today</button>
-  </form>`;
-}
-
-function saveLog(form) {
-  const f = new FormData(form);
-  const key = dateKey();
-  const prev = state.days[key] || {};
-  const num = (v) => (v === null || v === '' ? null : Number(v));
-  const gymType = f.get('gymType') || 'none';
-  const energy = num(f.get('energy'));
-  const sleep = String(f.get('sleep') || '').trim();
-  if (!parseSleep(sleep).length) return toast('Check the sleep format, e.g. 23:30-7:15');
-  if (energy === null) return toast('Pick an energy level');
-  state.days[key] = {
-    ...prev,
-    sleep,
-    walkingMin: num(f.get('walkingMin')),
-    gymType,
-    gymMin: gymType === 'none' ? null : num(f.get('gymMin')),
-    energy,
-    mood: num(f.get('mood')),
-    note: String(f.get('note') || '').trim(),
-    updatedAt: new Date().toISOString(),
+  return {
+    energy: mean(nums('energy')),
+    walk: mean(nums('walkingMin')),
+    sleepH: sleepMins.length ? (mean(sleepMins) / 60).toFixed(1) : '—',
+    cigsPerDay: (cigs / 7).toFixed(1),
   };
-  persist();
-  toast('Saved');
-  render();
 }
 
-/* ---------- Tasks ---------- */
+/* ---------- tasks ---------- */
 
-const importanceRank = (t) => (t.claudeDecides || !t.importance ? 4 : IMPORTANCE.indexOf(t.importance));
-const parseTags = (s) => String(s || '').split(/[\s,]+/).map((t) => t.replace(/^#/, '').trim().toLowerCase()).filter(Boolean);
+function urgency(t) {
+  if (t.status === 'done') return 9;
+  const n = daysTo(t.deadline);
+  if (n !== null && n < 0) return 0; // overdue
+  if (n === 0) return 1; // due today
+  if (t.importance === 'MUST DO' && !t.claudeDecides) return 2;
+  if (n !== null && n <= 3) return 3; // next three days
+  return 4;
+}
 
-function taskCard(t) {
-  const must = t.importance === 'MUST DO' && !t.claudeDecides;
-  const label = t.claudeDecides ? 'Claude decides' : t.importance;
-  const tags = (t.tags || []).map((x) => `<span class="tag">#${esc(x)}</span>`).join('');
+const sortTasks = (list) => list.slice().sort((a, b) =>
+  urgency(a) - urgency(b) ||
+  (IMP_RANK[a.importance] ?? 4) - (IMP_RANK[b.importance] ?? 4) ||
+  (a.deadline || '9999').localeCompare(b.deadline || '9999') ||
+  (a.createdAt || '').localeCompare(b.createdAt || ''));
+
+function dueChip(s) {
+  const n = daysTo(s);
+  if (n === null) return '';
+  const cls = n <= 0 ? 'hot' : n <= 3 ? 'warm' : '';
+  const label = n < 0 ? `${-n}d overdue` : n === 0 ? 'today' : n === 1 ? 'tomorrow' : n <= 6 ? `in ${n}d` : parseDay(s).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  return `<span class="due ${cls}">${label}</span>`;
+}
+
+function taskRow(t) {
   const done = t.status === 'done';
-  return `<article class="task${must ? ' must' : ''}${done ? ' done' : ''}">
-    <div>
-      <span class="badge">${esc(label)}</span>
-      <h3>${esc(t.title)}</h3>
-      ${t.description ? `<p class="muted">${esc(t.description)}</p>` : ''}
-      <div class="meta">${t.deadline ? `<span>due ${esc(t.deadline)}</span>` : ''}${tags}</div>
-    </div>
-    <div class="task-actions">
-      <button class="ghost" type="button" data-act="task-toggle" data-id="${t.id}">${done ? 'Reopen' : 'Done'}</button>
-      <button class="ghost danger" type="button" data-act="task-delete" data-id="${t.id}">Delete</button>
-    </div>
-  </article>`;
+  const must = !done && t.importance === 'MUST DO' && !t.claudeDecides;
+  const overdue = !done && urgency(t) === 0;
+  const imp = t.claudeDecides ? 'claude decides' : (t.importance || '');
+  const tags = (t.tags || []).map((x) => `<span class="tag">#${esc(x)}</span>`).join('');
+  return `<li class="task${done ? ' done' : ''}${must ? ' must' : ''}${overdue ? ' overdue' : ''}">
+    <input type="checkbox" data-done="${esc(t.id)}"${done ? ' checked' : ''} aria-label="Done: ${esc(t.title)}">
+    <div><div class="ttl">${esc(t.title)}</div>
+      <div class="tm">${done ? '' : dueChip(t.deadline)}${tags}${t.claudeDecides ? '<span class="tag claude">claude decides</span>' : ''}</div></div>
+    <span class="imp">${esc(imp)}</span>
+    <button class="x" type="button" data-del="${esc(t.id)}" aria-label="Delete task">×</button>
+  </li>`;
 }
 
-function viewTasks() {
-  const open = state.tasks
-    .filter((t) => t.status !== 'done')
-    .sort((a, b) => importanceRank(a) - importanceRank(b) || (a.deadline || '9999').localeCompare(b.deadline || '9999'));
-  const done = state.tasks.filter((t) => t.status === 'done');
-  return `
-  <header class="page-head">
-    <p class="eyebrow">${open.length} open</p>
-    <h1>Tasks</h1>
-  </header>
-  <form class="card" id="task-form">
-    <h2>Add task</h2>
-    <label class="field">Title <input name="title" required></label>
-    <label class="field">Description (optional) <textarea name="description" rows="2"></textarea></label>
-    <label class="field">Tags <input name="tags" placeholder="#uni #design #job"></label>
-    <div class="row2">
-      <label class="field">Importance ${importanceSelect('importance', 'Medium')}</label>
-      <label class="field">Deadline <input type="date" name="deadline"></label>
-    </div>
-    <label class="check"><input type="checkbox" name="claudeDecides"> Claude decides deadline and importance</label>
-    <button class="primary" type="submit">Add task</button>
-  </form>
-  <section class="task-list">${open.map(taskCard).join('') || '<p class="muted">No open tasks.</p>'}</section>
-  ${done.length ? `<details class="card"><summary>Done (${done.length})</summary><div class="task-list">${done.map(taskCard).join('')}</div></details>` : ''}`;
+function quickForm() {
+  return `<form class="quick" data-form="quick" autocomplete="off">
+    <input name="title" placeholder="New task…" required aria-label="New task">
+    <input name="deadline" type="date" aria-label="Deadline">
+    <select name="importance" aria-label="Importance">${IMP.map((i) => `<option${i === 'Medium' ? ' selected' : ''}>${i}</option>`).join('')}</select>
+    <input name="tags" placeholder="#tags" aria-label="Tags">
+    <button type="submit">Add</button>
+  </form>`;
 }
 
 function addTask(form) {
   const f = new FormData(form);
   const title = String(f.get('title') || '').trim();
-  if (!title) return toast('Give the task a title');
-  const claudeDecides = f.get('claudeDecides') === 'on';
+  if (!title) return;
   const now = new Date().toISOString();
   state.tasks.push({
     id: uid(),
-    title,
-    description: String(f.get('description') || '').trim(),
+    title: title.slice(0, 300),
+    description: '',
     tags: parseTags(f.get('tags')),
-    importance: claudeDecides ? null : f.get('importance'),
-    deadline: claudeDecides ? '' : String(f.get('deadline') || ''),
+    importance: String(f.get('importance') || 'Medium'),
+    deadline: String(f.get('deadline') || ''),
     status: 'open',
     sourcePick: null,
-    claudeDecides,
+    claudeDecides: false,
     createdAt: now,
     updatedAt: now,
   });
   persist();
-  toast('Task added');
   render();
+  document.querySelector('form.quick input[name=title]')?.focus();
 }
 
-/* ---------- Picks ---------- */
+function viewTasks() {
+  const open = state.tasks.filter((t) => t.status !== 'done');
+  const tags = [...new Set(open.flatMap((t) => t.tags || []))].sort();
+  const filt = ui.taskTag;
+  const list = sortTasks(open.filter((t) =>
+    filt === 'all' ? true : filt === 'urgent' ? urgency(t) <= 1 : (t.tags || []).includes(filt)));
+  const done = state.tasks
+    .filter((t) => t.status === 'done')
+    .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
+    .slice(0, 40);
+  const chips = ['all', 'urgent', ...tags];
+  return `
+  <div class="tasks-page">
+    <header class="page-head"><h1>Tasks</h1><span class="muted">${open.length} open</span></header>
+    <section class="card">
+      ${quickForm()}
+    </section>
+    <div class="filters" style="margin:18px 0 10px">${chips.map((f) =>
+      `<button type="button" data-act="task-filter" data-tag="${esc(f)}" aria-pressed="${filt === f}">${f === 'all' ? 'All' : f === 'urgent' ? 'Urgent' : '#' + esc(f)}</button>`).join('')}</div>
+    <section class="card" style="padding:6px 20px">
+      <ul class="tasks">${list.map(taskRow).join('') || '<li class="empty">Nothing here.</li>'}</ul>
+    </section>
+    <details class="card" style="margin-top:16px">
+      <summary style="cursor:pointer">Completed (${done.length})</summary>
+      <ul class="tasks" style="margin-top:8px">${done.map(taskRow).join('')}</ul>
+    </details>
+  </div>`;
+}
 
-function pickCard(p) {
-  const saved = p.status === 'saved';
-  const meta = [p.source, p.meta, p.date && `on ${p.date}`, p.deadline && `deadline ${p.deadline}`].filter(Boolean).join(' · ');
-  const title = p.url ? `<a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.title)}</a>` : esc(p.title);
-  return `<article class="card pick">
-    <span class="kind">${esc(p.kind)}</span>
-    <h3>${title}</h3>
-    <p class="muted">${esc(meta)}</p>
-    ${p.why ? `<p>${esc(p.why)}</p>` : ''}
-    <div class="actions">
-      <button class="ghost" type="button" data-act="pick-save" data-id="${p.id}">${saved ? 'Unsave' : 'Save'}</button>
-      <button class="ghost" type="button" data-act="pick-dismiss" data-id="${p.id}">Dismiss</button>
-      <button class="primary small" type="button" data-act="pick-task" data-id="${p.id}">Add to task</button>
+/* ---------- home ---------- */
+
+function logCard() {
+  const r = todayRec();
+  const radios = (name, cur) => [1, 2, 3, 4, 5].map((n) =>
+    `<label><input type="radio" name="${name}" value="${n}"${cur === n ? ' checked' : ''}><span>${n}</span></label>`).join('');
+  const gym = r.gymType || 'none';
+  return `<form class="card log" id="log" autocomplete="off">
+    <div class="card-head"><h2>Today</h2><span class="muted small" id="log-state">${esc(ui.logSaved)}</span></div>
+    <div class="grid2">
+      <label>Sleep<input name="sleep" value="${esc(r.sleep)}" placeholder="23:30-7:15"></label>
+      <label>Walk, min<input name="walkingMin" type="number" min="0" inputmode="numeric" value="${r.walkingMin ?? ''}"></label>
+      <label>Gym<select name="gymType">${['none', 'strength', 'cardio', 'other'].map((t) => `<option${gym === t ? ' selected' : ''}>${t}</option>`).join('')}</select></label>
+      <label>Gym, min<input name="gymMin" type="number" min="0" inputmode="numeric" value="${r.gymMin ?? ''}"></label>
     </div>
-    ${openPickForm === p.id ? pickTaskForm(p) : ''}
-  </article>`;
+    <div class="scale"><span>Energy</span><div class="dots">${radios('energy', r.energy)}</div></div>
+    <div class="scale"><span>Mood</span><div class="dots">${radios('mood', r.mood)}</div></div>
+    <label>Note<input name="note" value="${esc(r.note)}" placeholder="alcohol, anything"></label>
+  </form>`;
 }
 
-const pickTaskForm = (p) => `<form class="inline-form" data-pick="${p.id}">
-    <label class="field">Deadline <input type="date" name="deadline"></label>
-    <label class="check"><input type="checkbox" name="deadlineAuto"> Claude decides deadline</label>
-    <label class="field">Importance ${importanceSelect('importance', 'Medium', '<option value="auto">Claude decides</option>')}</label>
-    <button class="primary small" type="submit">Create task</button>
+function onLog(form) {
+  const f = new FormData(form);
+  const key = dateKey();
+  const prev = state.days[key] || {};
+  const num = (v) => (v === null || v === '' ? null : Number(v));
+  const gymType = f.get('gymType') || 'none';
+  state.days[key] = {
+    ...prev,
+    sleep: String(f.get('sleep') || '').trim(),
+    walkingMin: num(f.get('walkingMin')),
+    gymType,
+    gymMin: gymType === 'none' ? null : num(f.get('gymMin')),
+    energy: num(f.get('energy')),
+    mood: num(f.get('mood')),
+    note: String(f.get('note') || '').trim(),
+    updatedAt: new Date().toISOString(),
+  };
+  persist();
+  ui.logSaved = `saved ${clockOf(new Date())}`;
+  const st = document.getElementById('log-state');
+  if (st) st.textContent = ui.logSaved;
+  renderPartial('week', weekInner);
+}
+
+function cigInner() {
+  const today = cigsOn(dateKey());
+  const sl = sleepSummary(todayRec().sleep);
+  const first = today[0] ? new Date(today[0].at) : null;
+  let wake = '';
+  if (first && sl) wake = ` · ${fmtDur((first.getHours() * 60 + first.getMinutes() - sl.main.end + 1440) % 1440)} after waking`;
+  const times = today.slice(-6).map((c) => `<span>${clockOf(new Date(c.at))}</span>`).join('') || '<span>none yet</span>';
+  return `<div class="card-head"><h2>Cigarettes</h2><span class="big-n">${today.length}</span></div>
+    <div class="cig-row">
+      <button class="tap" type="button" data-act="cig-add" aria-label="Log one cigarette">+1</button>
+      <div class="times">${times}</div>
+      <button class="ghost" type="button" data-act="cig-undo"${today.length ? '' : ' disabled'}>undo</button>
+    </div>
+    <p class="muted small" style="margin:12px 0 0">${first ? `first at ${clockOf(first)}${wake}` : 'first at —'} · week ${weekStats().cigsPerDay}/day</p>`;
+}
+
+function weekInner() {
+  const w = weekStats();
+  return `<div class="card-head"><h2>This week</h2><span class="muted small">7-day average</span></div>
+    <dl class="week-kpi">
+      <div><dt>energy</dt><dd>${fmt(w.energy, 1)}</dd></div>
+      <div><dt>walk, min</dt><dd>${fmt(w.walk)}</dd></div>
+      <div><dt>sleep</dt><dd>${w.sleepH}</dd></div>
+      <div><dt>cig/day</dt><dd>${w.cigsPerDay}</dd></div>
+    </dl>`;
+}
+
+function currentPicks() {
+  const today = dateKey();
+  return state.picks
+    .filter((p) => p.status === 'active' && (!p.date || p.date >= today) && (!p.deadline || p.deadline >= today))
+    .sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99));
+}
+
+function viewHome() {
+  const now = new Date();
+  const open = state.tasks.filter((t) => t.status !== 'done');
+  const sorted = sortTasks(open);
+  const overdue = open.filter((t) => urgency(t) === 0).length;
+  const dueToday = open.filter((t) => urgency(t) === 1).length;
+  const h = now.getHours();
+  const part = h < 12 ? 'morning' : h < 18 ? 'afternoon' : 'evening';
+  const picks = currentPicks().slice(0, 4);
+  return `
+  <header class="hero">
+    <div>
+      <p class="eyebrow">KW ${isoWeek(now)} · ${now.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}</p>
+      <h1>Good ${part}<em>.</em></h1>
+    </div>
+    <dl class="kpis">
+      <div><dt>overdue</dt><dd class="${overdue ? 'hot' : ''}">${overdue}</dd></div>
+      <div><dt>due today</dt><dd>${dueToday}</dd></div>
+      <div><dt>open</dt><dd>${open.length}</dd></div>
+    </dl>
+  </header>
+  <div class="home">
+    <section class="card">
+      <div class="card-head"><h2>Focus</h2><a class="link" href="#tasks">all tasks →</a></div>
+      <ul class="tasks">${sorted.slice(0, 8).map(taskRow).join('') || '<li class="empty">Nothing open.</li>'}</ul>
+      ${sorted.length > 8 ? `<a class="more" href="#tasks">+${sorted.length - 8} more</a>` : ''}
+      ${quickForm()}
+    </section>
+    <div class="side">
+      ${logCard()}
+      <section class="card cig" id="cigs">${cigInner()}</section>
+      <section class="card">
+        <div class="card-head"><h2>Picks</h2><a class="link" href="#picks">open →</a></div>
+        <ol class="mini-picks">${picks.map((p) => {
+          const url = safeUrl(p.url);
+          return `<li><span class="kind">${esc(kindLabel(p.kind))}</span>${url
+            ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(p.title)}</a>`
+            : `<span class="ttl">${esc(p.title)}</span>`}</li>`;
+        }).join('') || '<li class="muted">No current picks.</li>'}</ol>
+      </section>
+      <section class="card" id="week">${weekInner()}</section>
+    </div>
+  </div>`;
+}
+
+/* ---------- picks ---------- */
+
+const pickTaskForm = (p) => `<form class="inline" data-pick="${esc(p.id)}">
+    <label>Deadline<input type="date" name="deadline"></label>
+    <label class="check"><input type="checkbox" name="deadlineAuto"> Claude decides</label>
+    <label>Importance<select name="importance">${IMP.map((i) => `<option${i === 'Medium' ? ' selected' : ''}>${i}</option>`).join('')}<option value="auto">Claude decides</option></select></label>
+    <button class="primary" type="submit">Create task</button>
   </form>`;
+
+function pickRow(p) {
+  const saved = p.status === 'saved';
+  const url = safeUrl(p.url);
+  const meta = [p.source, p.meta, p.date && `on ${p.date}`, p.deadline && `deadline ${p.deadline}`].filter(Boolean).map(esc).join(' · ');
+  return `<li class="pick">
+    <div>
+      <span class="kind">${esc(kindLabel(p.kind))}</span>
+      <div class="ttl">${url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(p.title)}</a>` : esc(p.title)}</div>
+      ${meta ? `<div class="meta">${meta}</div>` : ''}
+      ${p.why ? `<p class="why">${esc(p.why)}</p>` : ''}
+      ${ui.openPick === p.id ? pickTaskForm(p) : ''}
+    </div>
+    <div class="pa">
+      <button class="ghost" type="button" data-act="pick-save" data-id="${esc(p.id)}">${saved ? 'Unsave' : 'Save'}</button>
+      <button class="ghost" type="button" data-act="pick-task" data-id="${esc(p.id)}">+ Task</button>
+      <button class="ghost" type="button" data-act="pick-dismiss" data-id="${esc(p.id)}">Dismiss</button>
+    </div>
+  </li>`;
+}
 
 function taskFromPick(form, id) {
   const p = state.picks.find((x) => x.id === id);
@@ -278,7 +355,7 @@ function taskFromPick(form, id) {
     title: p.title,
     description: p.why || '',
     tags: [p.kind, ...(claudeDecides ? ['claude-decides'] : [])],
-    importance: importanceAuto ? null : f.get('importance'),
+    importance: importanceAuto ? null : String(f.get('importance') || 'Medium'),
     deadline: deadlineAuto ? '' : String(f.get('deadline') || ''),
     status: 'open',
     sourcePick: p.id,
@@ -286,7 +363,7 @@ function taskFromPick(form, id) {
     createdAt: now,
     updatedAt: now,
   });
-  openPickForm = null;
+  ui.openPick = null;
   persist();
   toast('Task added');
   render();
@@ -294,19 +371,24 @@ function taskFromPick(form, id) {
 
 function viewPicks() {
   const today = dateKey();
-  const list = state.picks.filter((p) =>
-    pickTab === 'saved' ? p.status === 'saved' : p.status === 'active' && isCurrent(p, today)
-  );
+  const pool = state.picks.filter((p) => ui.pickTab === 'saved'
+    ? p.status === 'saved'
+    : p.status === 'active' && (!p.date || p.date >= today) && (!p.deadline || p.deadline >= today));
+  const list = pool.filter((p) => p.kind === ui.pickKind).sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99));
   return `
-  <header class="page-head">
-    <p class="eyebrow">${list.length} shown</p>
-    <h1>Picks</h1>
-  </header>
-  <div class="seg tabs" role="group" aria-label="Picks view">
-    <button type="button" data-act="pick-tab" data-tab="current" aria-pressed="${pickTab === 'current'}">Current</button>
-    <button type="button" data-act="pick-tab" data-tab="saved" aria-pressed="${pickTab === 'saved'}">Saved</button>
-  </div>
-  <section class="pick-list">${list.map(pickCard).join('') || '<p class="muted">Nothing here.</p>'}</section>`;
+  <div class="tasks-page">
+    <header class="page-head">
+      <h1>Picks</h1>
+      <div class="seg-tabs">
+        <button type="button" data-act="pick-tab" data-tab="current" aria-pressed="${ui.pickTab === 'current'}">This week</button>
+        <button type="button" data-act="pick-tab" data-tab="saved" aria-pressed="${ui.pickTab === 'saved'}">Saved</button>
+      </div>
+    </header>
+    <div class="kind-tabs">${KINDS.map(([k, l]) => `<button type="button" data-act="pick-kind" data-kind="${k}" aria-pressed="${ui.pickKind === k}">${l}<span>${pool.filter((p) => p.kind === k).length}</span></button>`).join('')}</div>
+    <section class="card" style="margin-top:14px;padding:4px 20px">
+      <ul class="picks">${list.map(pickRow).join('') || '<li class="empty">Nothing here yet.</li>'}</ul>
+    </section>
+  </div>`;
 }
 
 function importPicks(form) {
@@ -317,7 +399,7 @@ function importPicks(form) {
     return toast('That is not valid JSON');
   }
   const items = Array.isArray(data) ? data : (data && (data.feed || data.picks)) || [];
-  if (!Array.isArray(items) || !items.length) return toast('No picks found in that JSON');
+  if (!Array.isArray(items) || !items.length) return toast('No picks found');
   const now = new Date().toISOString();
   for (const raw of items) {
     if (!raw || !raw.title) continue;
@@ -328,7 +410,7 @@ function importPicks(form) {
       title: String(raw.title),
       source: raw.source || '',
       meta: raw.meta || '',
-      url: /^https?:\/\//.test(raw.url || '') ? raw.url : '',
+      url: safeUrl(raw.url),
       why: raw.why || '',
       rank: raw.rank ?? null,
       week: raw.week || '',
@@ -346,35 +428,91 @@ function importPicks(form) {
   render();
 }
 
-/* ---------- Settings ---------- */
+/* ---------- trends ---------- */
+
+const avgNums = (arr) => { const v = arr.filter((x) => typeof x === 'number'); return v.length ? v.reduce((s, x) => s + x, 0) / v.length : null; };
+
+function bars(vals, max, color) {
+  const W = 260, H = 70, n = vals.length, g = 3, bw = (W - g * (n - 1)) / n;
+  const top = max || Math.max(1, ...vals.filter((v) => v != null));
+  let s = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">`;
+  vals.forEach((v, i) => {
+    const x = (i * (bw + g)).toFixed(1);
+    if (v == null) { s += `<rect x="${x}" y="${H - 2}" width="${bw.toFixed(1)}" height="2" fill="var(--line)"/>`; return; }
+    const h = Math.max(3, (v / top) * (H - 6));
+    s += `<rect x="${x}" y="${(H - h).toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="2" fill="${color}" opacity="${i === n - 1 ? 1 : 0.5}"/>`;
+  });
+  return s + '</svg>';
+}
+
+function viewTrends() {
+  const days = lastDays(14);
+  const rec = days.map((k) => state.days[k] || null);
+  const cigs = days.map((k) => cigsOn(k).length);
+  const sleepH = days.map((k) => { const s = sleepSummary(state.days[k]?.sleep); return s ? +(s.total / 60).toFixed(1) : null; });
+  const series = [
+    { n: 'Energy', u: '/5', v: rec.map((r) => r?.energy ?? null), max: 5, c: 'var(--clay)', dec: 1, lowerBetter: false },
+    { n: 'Walking', u: ' min', v: rec.map((r) => r?.walkingMin ?? null), max: null, c: 'var(--sage)', dec: 0, lowerBetter: false },
+    { n: 'Cigarettes', u: '/day', v: cigs, max: null, c: 'var(--ink)', dec: 1, lowerBetter: true },
+    { n: 'Sleep', u: ' h', v: sleepH, max: 10, c: 'var(--gold)', dec: 1, lowerBetter: false },
+  ];
+  const cards = series.map((s) => {
+    const a = avgNums(s.v.slice(7));
+    const b = avgNums(s.v.slice(0, 7));
+    let delta = { txt: 'no earlier week yet', cls: '' };
+    if (a != null && b != null) {
+      const d = a - b;
+      const good = s.lowerBetter ? d < 0 : d > 0;
+      delta = { txt: `${d >= 0 ? '+' : '−'}${Math.abs(d).toFixed(s.dec)} vs previous week`, cls: Math.abs(d) < 1e-9 ? '' : good ? 'good' : 'bad' };
+    }
+    return `<article class="card metric">
+      <div class="card-head"><h2>${s.n}</h2><span class="big-n">${fmt(a, s.dec)}<small class="muted small"> ${s.u.trim()}</small></span></div>
+      ${bars(s.v, s.max, s.c)}
+      <p class="delta ${delta.cls}">${delta.txt}</p>
+    </article>`;
+  }).join('');
+  const pairs = rec.filter((r) => r && typeof r.energy === 'number' && typeof r.walkingMin === 'number');
+  const act = pairs.filter((r) => r.walkingMin >= 20);
+  const rest = pairs.filter((r) => r.walkingMin < 20);
+  const insight = act.length >= 3 && rest.length >= 3
+    ? `On days with 20+ min walking, average energy is <b>${mean(act.map((r) => r.energy)).toFixed(1)}</b> vs <b>${mean(rest.map((r) => r.energy)).toFixed(1)}</b> on other days (${pairs.length} logged days). A pattern, not proof.`
+    : `Once you have 3 active days (20+ min walking) and 3 quieter days in the last 14, this compares your energy on each. Logged so far: ${pairs.length}.`;
+  return `
+  <div class="tasks-page">
+    <header class="page-head"><h1>Trends</h1><span class="muted">last 14 days</span></header>
+    <div class="trends">${cards}</div>
+    <section class="card insight-card" style="margin-top:16px"><p class="insight" style="margin:0">${insight}</p></section>
+  </div>`;
+}
+
+/* ---------- settings ---------- */
 
 function viewSettings() {
   const s = state.settings;
   return `
-  <header class="page-head">
-    <p class="eyebrow">On this device</p>
-    <h1>Settings</h1>
-  </header>
-  <form class="card" id="settings-form">
-    <h2>Storage</h2>
-    <label class="field">Google Sheet ID <input name="sheetId" value="${esc(s.sheetId)}" placeholder="stored on this device only"></label>
-    <p class="muted">Google sign-in and sync are not connected yet. Data stays on this device for now.</p>
-    <h2>What Claude looks for</h2>
-    <label class="field">Profile <textarea name="profile" rows="5">${esc(s.profile)}</textarea></label>
-    <p class="muted">Last run: ${esc(s.lastRun || 'never')}</p>
-    <button class="primary" type="submit">Save settings</button>
-  </form>
-  <form class="card" id="import-form">
-    <h2>Import picks</h2>
-    <p class="muted">Paste the weekly picks JSON. Items with the same id are replaced.</p>
-    <label class="field">JSON <textarea name="json" rows="4"></textarea></label>
-    <button class="ghost" type="submit">Import</button>
-  </form>
-  <section class="card">
-    <h2>Backup</h2>
-    <p class="muted">Download everything as one JSON file.</p>
-    <button class="ghost" type="button" data-act="export">Download backup</button>
-  </section>`;
+  <div class="tasks-page">
+    <header class="page-head"><h1>Settings</h1><span class="muted">on this device</span></header>
+    <div class="settings">
+      <form class="card" id="settings-form" style="display:grid;gap:14px">
+        <h2>Storage</h2>
+        <label>Google Sheet ID<input name="sheetId" value="${esc(s.sheetId)}" placeholder="stored on this device only"></label>
+        <p class="muted small" style="margin:0">Sign-in and Sheets sync are not connected yet.</p>
+        <h2>What Claude looks for</h2>
+        <label>Profile<textarea name="profile" rows="5">${esc(s.profile)}</textarea></label>
+        <div class="row"><button class="primary" type="submit">Save</button><span class="muted small">last run: ${esc(s.lastRun || 'never')}</span></div>
+      </form>
+      <form class="card" id="import-form" style="display:grid;gap:14px">
+        <h2>Import picks</h2>
+        <p class="muted small" style="margin:0">Paste the weekly picks JSON. Same ids are replaced.</p>
+        <label>JSON<textarea name="json" rows="4"></textarea></label>
+        <div class="row"><button class="primary" type="submit">Import</button></div>
+      </form>
+      <section class="card" style="display:grid;gap:12px">
+        <h2>Backup</h2>
+        <div class="row"><button class="ghost" type="button" data-act="export">Download everything (JSON)</button></div>
+      </section>
+    </div>
+  </div>`;
 }
 
 function saveSettings(form) {
@@ -385,7 +523,7 @@ function saveSettings(form) {
     profile: String(f.get('profile') || '').trim(),
   };
   persist();
-  toast('Settings saved');
+  toast('Saved');
   render();
 }
 
@@ -398,67 +536,97 @@ function exportBackup() {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
-/* ---------- Shell ---------- */
+/* ---------- shell ---------- */
 
-const views = { today: viewToday, tasks: viewTasks, picks: viewPicks, settings: viewSettings };
+const VIEWS = { home: viewHome, tasks: viewTasks, picks: viewPicks, trends: viewTrends, settings: viewSettings };
+
+function currentRoute() {
+  const h = location.hash.slice(1);
+  return VIEWS[h] ? h : 'home';
+}
 
 function render() {
-  const hash = location.hash.slice(1);
-  const route = views[hash] ? hash : 'today';
+  const r = currentRoute();
   document.querySelectorAll('[data-route]').forEach((a) => {
-    const on = a.dataset.route === route;
-    a.classList.toggle('active', on);
+    const on = a.dataset.route === r;
     if (on) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
   });
-  $('#view').innerHTML = views[route]();
+  $('#view').innerHTML = VIEWS[r]();
+}
+
+function renderPartial(id, fn) {
+  const el = document.getElementById(id);
+  if (el) el.innerHTML = fn();
 }
 
 document.addEventListener('click', (e) => {
+  const del = e.target.closest('[data-del]');
+  if (del) {
+    state.tasks = state.tasks.filter((t) => t.id !== del.dataset.del);
+    persist();
+    return render();
+  }
   const el = e.target.closest('[data-act]');
   if (!el) return;
-  const { act, id, tab } = el.dataset;
-  if (act === 'export') return exportBackup();
+  const { act, id } = el.dataset;
   if (act === 'cig-add') {
     state.cigs.push({ id: uid(), at: new Date().toISOString() });
-  } else if (act === 'cig-undo') {
+    persist();
+    return renderPartial('cigs', cigInner);
+  }
+  if (act === 'cig-undo') {
     const today = cigsOn(dateKey());
     if (!today.length) return;
     const last = today[today.length - 1];
     state.cigs = state.cigs.filter((c) => c.id !== last.id);
-  } else if (act === 'pick-tab') {
-    pickTab = tab;
-  } else if (act === 'task-toggle') {
-    const t = state.tasks.find((x) => x.id === id);
-    if (!t) return;
-    t.status = t.status === 'done' ? 'open' : 'done';
-    t.updatedAt = new Date().toISOString();
-  } else if (act === 'task-delete') {
-    if (!confirm('Delete this task?')) return;
-    state.tasks = state.tasks.filter((x) => x.id !== id);
-  } else if (act === 'pick-save' || act === 'pick-dismiss') {
+    persist();
+    return renderPartial('cigs', cigInner);
+  }
+  if (act === 'task-filter') { ui.taskTag = el.dataset.tag; return render(); }
+  if (act === 'pick-tab') { ui.pickTab = el.dataset.tab; return render(); }
+  if (act === 'pick-kind') { ui.pickKind = el.dataset.kind; return render(); }
+  if (act === 'pick-save' || act === 'pick-dismiss') {
     const p = state.picks.find((x) => x.id === id);
     if (!p) return;
     p.status = act === 'pick-dismiss' ? 'dismissed' : p.status === 'saved' ? 'active' : 'saved';
-  } else if (act === 'pick-task') {
-    openPickForm = openPickForm === id ? null : id;
-  } else {
+    persist();
+    return render();
+  }
+  if (act === 'pick-task') { ui.openPick = ui.openPick === id ? null : id; return render(); }
+  if (act === 'export') return exportBackup();
+});
+
+document.addEventListener('change', (e) => {
+  const t = e.target;
+  if (t.dataset && t.dataset.done) {
+    const task = state.tasks.find((x) => x.id === t.dataset.done);
+    if (task) {
+      task.status = t.checked ? 'done' : 'open';
+      task.updatedAt = new Date().toISOString();
+      persist();
+      render();
+    }
     return;
   }
-  persist();
-  render();
+  if (t.form && t.form.id === 'log') onLog(t.form);
+});
+
+document.addEventListener('input', (e) => {
+  if (e.target.form && e.target.form.id === 'log') onLog(e.target.form);
 });
 
 document.addEventListener('submit', (e) => {
   e.preventDefault();
   const form = e.target;
   if (form.dataset.pick) return taskFromPick(form, form.dataset.pick);
-  const handlers = { 'log-form': saveLog, 'task-form': addTask, 'settings-form': saveSettings, 'import-form': importPicks };
-  handlers[form.id]?.(form);
+  if (form.dataset.form === 'quick') return addTask(form);
+  if (form.id === 'settings-form') return saveSettings(form);
+  if (form.id === 'import-form') return importPicks(form);
 });
 
+if (!location.hash) location.hash = '#home';
 window.addEventListener('hashchange', render);
-if (!location.hash) location.hash = '#today';
 render();
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js');
