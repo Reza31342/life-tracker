@@ -1,6 +1,9 @@
 // Offline shell cache. Google Sheets API calls are never cached here.
-const CACHE = 'life-tracker-v3';
-const ASSETS = ['./', './index.html', './styles.css', './app.js', './store.js', './manifest.webmanifest', './icon.svg'];
+const CACHE = 'life-tracker-v4';
+const ASSETS = [
+  './', './index.html', './styles.css', './manifest.webmanifest', './icon.svg',
+  './app.js', './store.js', './schema.js', './sheets.js', './auth.js', './sync.js',
+];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting()));
