@@ -159,6 +159,28 @@ main{max-width:1180px;margin:0 auto;padding:28px 28px 80px}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .trends .card{min-width:0}
 
+/* desktop home: one screen, no scrolling */
+@media (min-width:901px){
+  body[data-route=home]{height:100vh;overflow:hidden}
+  body[data-route=home] main{height:calc(100vh - 61px);max-width:none;padding:18px 28px;display:flex;flex-direction:column}
+  body[data-route=home] #view{flex:1;min-height:0;display:flex;flex-direction:column}
+  body[data-route=home] .hero{margin-bottom:14px}
+  body[data-route=home] .hero h1{font-size:40px}
+  body[data-route=home] .kpis dd{font-size:28px}
+  .home{flex:1;min-height:0;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);align-items:stretch}
+  .home > .focus{min-height:0;display:flex;flex-direction:column}
+  .focus .tasks{flex:1;min-height:0;overflow:auto}
+  .side{min-height:0;grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-rows:minmax(0,1fr) minmax(0,1fr) auto;grid-template-areas:"log cigs" "log picks" "week week"}
+  .side > .card{min-height:0;overflow:hidden}
+  .side .log{grid-area:log}
+  #cigs{grid-area:cigs}
+  .picks-card{grid-area:picks;display:flex;flex-direction:column}
+  #week{grid-area:week;padding:14px 20px}
+  #week .week-kpi{margin:0}
+  .mini-picks{overflow:auto;flex:1;min-height:0}
+  .log{align-content:start}
+}
+
 /* phone */
 @media (max-width:900px){
   .home,.trends{grid-template-columns:1fr}

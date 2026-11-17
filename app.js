@@ -290,7 +290,7 @@ function viewHome() {
     </dl>
   </header>
   <div class="home">
-    <section class="card">
+    <section class="card focus">
       <div class="card-head"><h2>Focus</h2><a class="link" href="#tasks">all tasks →</a></div>
       <ul class="tasks">${sorted.slice(0, 8).map(taskRow).join('') || '<li class="empty">Nothing open.</li>'}</ul>
       ${sorted.length > 8 ? `<a class="more" href="#tasks">+${sorted.length - 8} more</a>` : ''}
@@ -299,7 +299,7 @@ function viewHome() {
     <div class="side">
       ${logCard()}
       <section class="card cig" id="cigs">${cigInner()}</section>
-      <section class="card">
+      <section class="card picks-card">
         <div class="card-head"><h2>Picks</h2><a class="link" href="#picks">open →</a></div>
         <ol class="mini-picks">${picks.map((p) => {
           const url = safeUrl(p.url);
@@ -380,7 +380,7 @@ function viewPicks() {
     <header class="page-head">
       <h1>Picks</h1>
       <div class="seg-tabs">
-        <button type="button" data-act="pick-tab" data-tab="current" aria-pressed="${ui.pickTab === 'current'}">This week</button>
+        <button type="button" data-act="pick-tab" data-tab="current" aria-pressed="${ui.pickTab === 'current'}">Current</button>
         <button type="button" data-act="pick-tab" data-tab="saved" aria-pressed="${ui.pickTab === 'saved'}">Saved</button>
       </div>
     </header>
@@ -547,6 +547,7 @@ function currentRoute() {
 
 function render() {
   const r = currentRoute();
+  document.body.dataset.route = r;
   document.querySelectorAll('[data-route]').forEach((a) => {
     const on = a.dataset.route === r;
     if (on) a.setAttribute('aria-current', 'page');
