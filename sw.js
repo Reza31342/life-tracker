@@ -1,8 +1,8 @@
-// Offline shell cache. Google Sheets API calls are never cached here.
-const CACHE = 'life-tracker-v4';
+// Offline shell cache. Requests to the sheet script are cross-origin and never cached here.
+const CACHE = 'life-tracker-v6';
 const ASSETS = [
   './', './index.html', './styles.css', './manifest.webmanifest', './icon.svg',
-  './app.js', './store.js', './schema.js', './sheets.js', './auth.js', './sync.js',
+  './app.js', './store.js', './schema.js', './bridge.js', './sync.js',
 ];
 
 self.addEventListener('install', (e) => {
@@ -24,7 +24,11 @@ self.addEventListener('fetch', (e) => {
   e.respondWith(
     fetch(e.request)
       .then((res) => {
-        caches.open(CACHE).then((c) => c.put(e.request, res.clone()));
+        // Copy before handing the response to the page: the page reads the body right away.
+        if (res.ok) {
+          const copy = res.clone();
+          e.waitUntil(caches.open(CACHE).then((c) => c.put(e.request, copy)));
+        }
         return res;
       })
       .catch(() => caches.match(e.request))

@@ -15,9 +15,20 @@ export function emptyData() {
     pulledAt: '',
     outbox: [],
     seq: 0,
-    device: { clientId: '', sheetId: '', lastSyncAt: '', lastError: '' },
+    // bridgeUrl and bridgeKey: the sheet script's link and this device's key. On this device only.
+    device: { bridgeUrl: '', bridgeKey: '', lastSyncAt: '', lastError: '' },
     migratedFrom: '',
   };
+}
+
+// Earlier versions signed in with Google (clientId, sheetId). Those fields are dropped, and so is
+// their last error message, which referred to Google sign-in.
+function cleanDevice(d) {
+  const device = { ...emptyData().device, ...(d && typeof d === 'object' ? d : {}) };
+  if ('clientId' in device || 'sheetId' in device) device.lastError = '';
+  delete device.clientId;
+  delete device.sheetId;
+  return device;
 }
 
 const num = (v) => {
@@ -127,7 +138,8 @@ export class Store {
     const raw = this.read(V2);
     if (raw !== null) {
       try {
-        return { ...emptyData(), ...JSON.parse(raw) };
+        const saved = JSON.parse(raw);
+        return { ...emptyData(), ...saved, device: cleanDevice(saved.device) };
       } catch {
         // Keep the unreadable copy so nothing is lost, then start clean.
         try { this.storage.setItem(`${V2}.corrupt`, raw); } catch { /* storage full */ }
@@ -137,9 +149,8 @@ export class Store {
     const v1 = this.read(V1);
     if (v1 !== null) {
       try {
-        const { ops, sheetId } = fromV1(JSON.parse(v1));
+        const { ops } = fromV1(JSON.parse(v1));
         data.migratedFrom = 'v1';
-        data.device.sheetId = sheetId;
         for (const [tab, rec] of ops) {
           data.seq += 1;
           data.outbox.push({ seq: data.seq, tab, key: rec[TABS[tab].key], rec });

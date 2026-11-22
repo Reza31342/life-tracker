@@ -3,8 +3,7 @@ import {
   APP_TABS, PICK_STATUSES, GYM_TYPES, SchemaError, ms, isDateKey, dayDiff, shiftDay,
   logicalDay, clockAt, minutesAt,
 } from './schema.js';
-import { getToken, signOut, hasGrant, AuthError } from './auth.js';
-import { sheetTitle, SheetsError } from './sheets.js';
+import { createBridge, isBridgeUrl, BridgeError } from './bridge.js';
 import { syncOnce } from './sync.js';
 
 const store = new Store(localStorage);
@@ -509,15 +508,18 @@ function viewTrends() {
 
 /* ---------- settings and sync ---------- */
 
+const connected = () => !!(store.data.device.bridgeUrl && store.data.device.bridgeKey);
+const bridge = () => createBridge({ url: store.data.device.bridgeUrl, key: store.data.device.bridgeKey });
+
 function syncLabel() {
   const d = store.data.device;
-  if (!d.clientId || !d.sheetId) return 'Not connected · saved on this device';
+  if (!connected()) return 'Not connected · saved on this device';
   const waiting = store.pendingCount();
+  const tail = waiting ? ` · ${waiting} waiting` : '';
   if (syncing) return 'Syncing…';
-  if (!navigator.onLine) return `Offline${waiting ? ` · ${waiting} waiting` : ''}`;
-  if (connectionLost) return `Offline · ${waiting} waiting`;
+  if (!navigator.onLine) return `Offline${tail}`;
+  if (connectionLost) return `Can't reach the sheet${tail}`;
   if (d.lastError) return d.lastError;
-  if (!hasGrant()) return `Sign in to Google in Settings to sync${waiting ? ` · ${waiting} waiting` : ''}`;
   if (waiting) return `${waiting} waiting to sync`;
   return d.lastSyncAt ? `Synced ${clockAt(d.lastSyncAt)}` : 'Not synced yet';
 }
@@ -537,15 +539,15 @@ function viewSettings() {
   <div class="tasks-page">
     <header class="page-head"><h1>Settings</h1><span class="muted" id="sync-detail">${esc(syncLabel())}</span></header>
     <div class="settings">
-      <form class="card" id="connect-form" style="display:grid;gap:14px">
+      <form class="card" id="connect-form" style="display:grid;gap:14px" autocomplete="off">
         <h2>Google Sheet</h2>
-        <label>Google client ID<input name="clientId" value="${esc(d.clientId)}" placeholder="…apps.googleusercontent.com" autocomplete="off"></label>
-        <label>Sheet ID<input name="sheetId" value="${esc(d.sheetId)}" placeholder="the long id in the sheet's link" autocomplete="off"></label>
-        <p class="muted small" style="margin:0">Both are kept on this device only. The repo holds no IDs or tokens.</p>
+        <label>Sheet script link<input name="bridgeUrl" value="${esc(d.bridgeUrl)}" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off" spellcheck="false"></label>
+        <label>Key<input name="bridgeKey" type="password" value="" placeholder="${d.bridgeKey ? 'Saved on this device. Leave empty to keep it' : 'From the script’s log after you run setup'}" autocomplete="off" spellcheck="false"></label>
+        <p class="muted small" style="margin:0">Both stay on this device only. You set them once per device; there is no sign-in to renew. Setup steps are in the <a href="https://github.com/Reza31342/life-tracker#connect-to-the-google-sheet" target="_blank" rel="noopener">README</a>.</p>
         <div class="row" style="flex-wrap:wrap;gap:8px">
           <button class="primary" type="submit">Save and connect</button>
           <button class="ghost" type="button" data-act="sync-now">Sync now</button>
-          <button class="ghost" type="button" data-act="sign-out">Sign out of Google</button>
+          <button class="ghost" type="button" data-act="forget-link">Remove link from this device</button>
         </div>
       </form>
       <form class="card" id="profile-form" style="display:grid;gap:14px">
@@ -568,68 +570,54 @@ function viewSettings() {
   </div>`;
 }
 
-const POPUP_BLOCKED_MESSAGE = "Chrome blocked Google's sign-in window. Allow pop-ups for this site (icon at the right of the address bar), then tap Sync now.";
+const LINK_HELP = 'Check the link in Settings, and that the deployment’s access is set to Anyone.';
 
 function friendlyError(err) {
   if (err instanceof SchemaError) return err.message;
-  if (err instanceof AuthError) {
-    if (err.code === 'no_client_id') return 'Add your Google client ID in Settings';
-    if (err.code === 'no_script') return err.message;
-    if (err.code === 'popup_blocked') return POPUP_BLOCKED_MESSAGE;
-    if (err.code === 'popup' || err.code === 'access_denied') {
-      return 'Sign-in was cancelled or blocked. Press "Save and connect" to try again.';
-    }
-    return 'Sign in to Google again in Settings';
-  }
-  if (err instanceof SheetsError) {
-    if (err.status === 0) return 'No connection. Changes wait and sync when you are back online.';
-    if (err.status === 401) return 'Sign in to Google again in Settings';
-    if (err.status === 403) return "Google won't let this account open the sheet. Share the sheet with this account and enable the Google Sheets API.";
-    if (err.status === 404) return 'Sheet not found. Check the Sheet ID in Settings.';
-    return `Google error: ${err.message}`;
+  if (err instanceof BridgeError) {
+    if (err.code === 'bad_key') return "The key doesn't match the sheet script. Paste the key again in Settings.";
+    if (err.code === 'not_set_up') return 'The sheet script has no key yet. Run "setup" in Apps Script.';
+    if (err.code === 'not_found') return 'Sheet script link not found. Check it in Settings (it ends with /exec).';
+    if (err.code === 'not_json') return `The link isn't answering like the Life Tracker script. ${LINK_HELP}`;
+    if (err.code === 'offline') return `Couldn't reach the sheet script. ${LINK_HELP}`;
+    if (err.code === 'busy' || err.code === 'server') return 'The sheet script was busy. Sync will try again.';
+    if (err.code === 'missing_tab') return err.message;
+    return `Sheet script: ${err.message}`;
   }
   return String(err?.message || err);
 }
-
-const tokenFor = (clientId) => (opts = {}) => getToken({ ...opts, clientId });
 
 let syncing = false;
 let syncQueued = false;
 let syncTimer = null;
 let connectionLost = false;
-// Set when Chrome blocked the sign-in window. Automatic syncs then wait for a tap (Sync now or
-// Save and connect), so the browser isn't asked again and again. Memory only: a reload tries once.
-let popupBlocked = false;
 
 function scheduleSync(delay = 1500) {
   clearTimeout(syncTimer);
   syncTimer = setTimeout(() => runSync(), delay);
 }
 
-async function runSync({ manual = false } = {}) {
+async function runSync() {
   const d = store.data.device;
-  if (!d.clientId || !d.sheetId) return paintSync();
+  if (!connected()) return paintSync();
   if (syncing) {
     syncQueued = true;
     return;
   }
-  if (!navigator.onLine || !hasGrant()) return paintSync();
-  if (popupBlocked && !manual) return paintSync();
+  if (!navigator.onLine) return paintSync();
   syncing = true;
   paintSync();
   try {
-    const result = await syncOnce(store, { sheetId: d.sheetId, getToken: tokenFor(d.clientId) });
+    const result = await syncOnce(store, { api: bridge() });
     d.lastSyncAt = nowIso();
     d.lastError = '';
     connectionLost = false;
-    popupBlocked = false;
     if (result.superseded) {
       toast(`${result.superseded} older edit${result.superseded > 1 ? 's were' : ' was'} replaced by newer changes`);
     }
   } catch (err) {
     // No connection is not an error to show: the edits are safe in the outbox and sync retries.
-    connectionLost = err instanceof SheetsError && err.status === 0;
-    popupBlocked = err instanceof AuthError && err.code === 'popup_blocked';
+    connectionLost = err instanceof BridgeError && err.code === 'offline';
     d.lastError = connectionLost ? '' : friendlyError(err);
     console.warn('Sync failed', err);
   } finally {
@@ -646,34 +634,38 @@ async function runSync({ manual = false } = {}) {
 
 async function connect() {
   const d = store.data.device;
-  if (!d.clientId || !d.sheetId) {
-    toast('Enter the client ID and the Sheet ID');
+  if (!isBridgeUrl(d.bridgeUrl)) {
+    d.lastError = 'The link should look like https://script.google.com/macros/s/…/exec';
+    store.save();
+    paintSync();
+    return;
+  }
+  if (!d.bridgeKey) {
+    toast('Paste the key from the sheet script');
     return;
   }
   try {
-    // Opens Google's sign-in window, so this must run from a click.
-    await getToken({ clientId: d.clientId, interactive: true });
-    const title = await sheetTitle(d.sheetId, tokenFor(d.clientId));
+    const title = await bridge().ping();
     d.lastError = '';
-    popupBlocked = false;
+    connectionLost = false;
     store.save();
     toast(`Connected to "${title}"`);
   } catch (err) {
-    popupBlocked = err instanceof AuthError && err.code === 'popup_blocked';
     d.lastError = friendlyError(err);
     store.save();
     paintSync();
     return;
   }
-  await runSync({ manual: true });
+  await runSync();
   render();
 }
 
 function saveConnection(form) {
   const f = new FormData(form);
   const d = store.data.device;
-  d.clientId = String(f.get('clientId') || '').trim();
-  d.sheetId = String(f.get('sheetId') || '').trim();
+  d.bridgeUrl = String(f.get('bridgeUrl') || '').trim();
+  const key = String(f.get('bridgeKey') || '').trim();
+  if (key) d.bridgeKey = key;
   store.save();
   connect();
 }
@@ -691,12 +683,16 @@ function saveProfile(form) {
   toast(changed ? 'Saved' : 'Nothing changed');
 }
 
-function disconnectGoogle() {
-  signOut();
-  store.data.device.lastError = 'Signed out. Changes stay on this device until you connect again.';
+// Removes the link and key from this device only. Data and queued changes stay here.
+function forgetLink() {
+  const d = store.data.device;
+  d.bridgeUrl = '';
+  d.bridgeKey = '';
+  d.lastError = '';
+  connectionLost = false;
   store.save();
-  paintSync();
-  toast('Signed out of Google');
+  render();
+  toast('Link and key removed from this device. Your data stays here.');
 }
 
 function exportBackup() {
@@ -795,8 +791,8 @@ document.addEventListener('click', (e) => {
     return render();
   }
   if (act === 'pick-task') { ui.openPick = ui.openPick === id ? null : id; return render(); }
-  if (act === 'sync-now') return runSync({ manual: true });
-  if (act === 'sign-out') return disconnectGoogle();
+  if (act === 'sync-now') return runSync();
+  if (act === 'forget-link') return forgetLink();
   if (act === 'export') return exportBackup();
 });
 
@@ -830,7 +826,7 @@ document.addEventListener('submit', (e) => {
 function boot() {
   paintSync();
   // Reconnect silently when the browser still has a Google session. Otherwise the user presses Connect.
-  if (store.data.device.clientId && store.data.device.sheetId && hasGrant()) runSync();
+  if (connected()) runSync();
   window.addEventListener('online', () => runSync());
   window.addEventListener('offline', () => paintSync());
   document.addEventListener('visibilitychange', () => { if (!document.hidden) runSync(); });

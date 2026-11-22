@@ -14,26 +14,36 @@ Then open http://localhost:8080. Run the tests with `npm test` (Node 18+).
 - `index.html`, `styles.css`, `app.js`: the app shell and screens (Home, Tasks, Picks, Trends, Settings).
 - `schema.js`: the sheet layout (tabs, columns, types), row encoding, and the Berlin logical day.
 - `store.js`: device data: the last copy read from the sheet, a queue of changes not yet written, and the v1 migration.
-- `sheets.js`: Google Sheets API calls (read all tabs, update rows, append rows) with retries.
-- `auth.js`: Google sign-in (Identity Services). The token is kept in memory only.
+- `bridge.js`: the app's link to the sheet script, with retries.
 - `sync.js`: the sync rules (last write wins per row, header check, no-op detection).
+- `apps-script/Code.gs`: the script that lives inside the sheet and is the app's only way in.
 - `sw.js`, `manifest.webmanifest`, `icon.svg`: offline cache and home-screen install.
 
-## Connect to the Google Sheet (once)
+## Connect to the Google Sheet
 
-1. In Google Cloud Console, create a project and enable the **Google Sheets API**.
-2. Under Google Auth Platform, set the audience to External, leave it in Testing, and add your own Google account as a test user.
-3. Under Clients, create an **OAuth client ID** of type Web application. Add these Authorized JavaScript origins:
-   - `https://reza31342.github.io`
-   - `http://localhost:8080` (only for local testing)
-4. Open the app's Settings, paste the client ID and the Sheet ID (the long id in the sheet's link), then press **Save and connect**.
+Once per sheet:
 
-The client ID and Sheet ID are stored on the device only. The repo holds no IDs, tokens, or personal data.
+1. Open the sheet, then **Extensions > Apps Script**.
+2. Delete the code in the editor, paste the contents of `apps-script/Code.gs`, and save.
+3. In the toolbar, pick the function **setup** and press **Run**. Google asks for access: choose your account. On "Google hasn't verified this app", press **Advanced**, then **Go to … (unsafe)**, then **Allow**. This is your own script.
+4. The execution log shows your key. Copy it and keep it private.
+5. **Deploy > New deployment**. Type: **Web app**. Execute as: **Me**. Who has access: **Anyone**. Press **Deploy** and copy the web app URL (it ends with `/exec`).
+
+Once per device: open the app, go to Settings, paste the link and the key, and press **Save and connect**.
+
+How it is kept private:
+
+- The link and the key are stored on the device only. The repo holds no links, keys, IDs or personal data.
+- Every request must carry the key. Without it the script answers with an error and no data.
+- The script can only open this one spreadsheet (`@OnlyCurrentDoc`), and only the app's tabs.
+- To lock out every device (for example a lost phone), run **setup** again. It makes a new key, and the old one stops working. Then paste the new key on your own devices.
+- After changing `Code.gs`: **Deploy > Manage deployments**, edit the deployment, choose **New version**, and deploy. The link stays the same.
 
 ## Sync behaviour
 
 - Every edit is saved on the device first, so the app works offline. The status in the header shows what is waiting.
-- Sync runs after edits, when you come back online, every five minutes, and on Sync now.
+- Sync runs after edits, when you come back online, when you return to the app, every five minutes, and on Sync now.
 - If two devices change the same row, the newer change wins. The older edit is dropped and the app says so.
+- New rows go directly under the last row that has an id, whatever else is lower down in the sheet.
 - If someone renames or moves a column in the sheet, sync stops with a message instead of writing to the wrong column.
 - The first time, the app moves any data from the earlier local version (`life-tracker.v1`) into the outbox. That key is left in place.

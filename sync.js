@@ -3,12 +3,12 @@
 //  - Last write wins per row, by updated_at. A queued edit older than the sheet's copy is dropped
 //    and counted as superseded, so the screen never reverts someone else's newer edit.
 //  - An edit identical to the sheet's copy is dropped as a no-op.
-//  - Existing rows are updated in place (one batch). New rows are appended (one request per tab).
+//  - All writes go to the sheet script in one request: existing rows are updated in place, new
+//    rows are added under the last row with a key. The script's writes are keyed, so a retry
+//    after a lost reply never makes duplicates.
 //  - Cigarette taps have no updated_at column: a tap is written once, and an undo is an update.
+// api: { pull(), write({ updates, appends }) }, see bridge.js.
 import { TABS, APP_TABS, toRow, fromRow, checkHeaders, SchemaError, SCHEMA_VERSION, ms } from './schema.js';
-import { pullAll, writeRows, appendRows, rowRange } from './sheets.js';
-
-const defaultApi = { pullAll, writeRows, appendRows };
 
 export function parseSnapshot(raw) {
   const out = {};
@@ -57,23 +57,22 @@ export function planWrites(store) {
   return plan;
 }
 
-export async function execute(store, plan, { sheetId, getToken, api = defaultApi }) {
+const rowOr = (r, fallback) => (Number.isInteger(r) && r > 1 ? r : fallback);
+
+export async function execute(store, plan, api) {
+  const updates = plan.updates.map((u) => ({ tab: u.op.tab, row: u.row, key: String(u.op.key), values: u.values }));
+  const appends = [...plan.appends].map(([tab, items]) => ({ tab, rows: items.map((i) => i.values) }));
   try {
-    if (plan.updates.length) {
-      await api.writeRows(
-        sheetId,
-        getToken,
-        plan.updates.map((u) => ({ range: rowRange(u.op.tab, u.row), values: u.values })),
-      );
-      for (const u of plan.updates) {
-        store.applyRemote(u.op.tab, u.op.rec, u.row);
-        plan.done.add(u.op.seq);
-      }
-    }
+    if (!updates.length && !appends.length) return;
+    const res = await api.write({ updates, appends });
+    plan.updates.forEach((u, i) => {
+      store.applyRemote(u.op.tab, u.op.rec, rowOr(res.updated[i], u.row));
+      plan.done.add(u.op.seq);
+    });
     for (const [tab, items] of plan.appends) {
-      const start = await api.appendRows(sheetId, getToken, tab, items.map((i) => i.values));
+      const rows = res.appended[tab] || [];
       items.forEach((it, i) => {
-        store.applyRemote(tab, it.op.rec, start + i);
+        store.applyRemote(tab, it.op.rec, rowOr(rows[i], undefined));
         plan.done.add(it.op.seq);
       });
     }
@@ -82,14 +81,14 @@ export async function execute(store, plan, { sheetId, getToken, api = defaultApi
   }
 }
 
-export async function syncOnce(store, { sheetId, getToken, api = defaultApi }) {
-  const raw = await api.pullAll(sheetId, getToken);
+export async function syncOnce(store, { api }) {
+  const raw = await api.pull();
   const parsed = parseSnapshot(raw);
   store.setCache(parsed);
   const plan = planWrites(store);
   const pushed = plan.updates.length + [...plan.appends.values()].reduce((n, a) => n + a.length, 0);
   try {
-    await execute(store, plan, { sheetId, getToken, api });
+    await execute(store, plan, api);
   } finally {
     store.save();
   }

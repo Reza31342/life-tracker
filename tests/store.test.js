@@ -99,3 +99,13 @@ test('the rollover hour from the settings tab applies to later reads', () => {
   ] });
   assert.equal(logicalDay(at), '2026-11-18');
 });
+
+test('a device saved by the Google sign-in version drops its client and sheet ids and their old error', () => {
+  const storage = new MemStorage();
+  storage.setItem('life-tracker.v2', JSON.stringify({
+    v: 2, cache: {}, outbox: [], seq: 0,
+    device: { clientId: 'x.apps.googleusercontent.com', sheetId: 'S', lastSyncAt: '2026-11-22T20:00:00Z', lastError: 'Sign in to Google again in Settings' },
+  }));
+  const store = new Store(storage);
+  assert.deepEqual(store.data.device, { bridgeUrl: '', bridgeKey: '', lastSyncAt: '2026-11-22T20:00:00Z', lastError: '' });
+});
