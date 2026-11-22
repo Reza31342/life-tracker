@@ -23,6 +23,7 @@
 <body>
 <header class="top">
   <span class="brand">Life Tracker</span>
+  <a class="counts" id="counts" href="#tasks" aria-label="Task counts, open the task list"></a>
   <span class="sync" id="sync" aria-live="polite"></span>
   <button class="undo-btn" id="undo" type="button" data-act="undo" disabled title="Nothing to undo"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7.5 5 3.5 9l4 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 9h7.5a5 5 0 0 1 0 10H9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><span>Undo</span></button>
   <nav class="nav" aria-label="Main">
@@ -41,6 +42,7 @@
   <a href="#trends" data-route="trends">Trends</a>
   <a href="#settings" data-route="settings">More</a>
 </nav>
+<dialog id="edit" class="edit-dialog" aria-labelledby="edit-title"></dialog>
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
 <script type="module" src="./app.js"></script>
 </body>

@@ -5,7 +5,8 @@ import {
 } from './schema.js';
 import { createBridge, isBridgeUrl, BridgeError } from './bridge.js';
 import { syncOnce } from './sync.js';
-import { parseDateInput, typed, longDate, quickDates } from './dates.js';
+import { typed, longDate, weekdayOf } from './dates.js';
+import { parseRanges, rangesTotal, parseDuration, fmtHM } from './time.js';
 import { UndoHistory } from './undo.js';
 
 // Cigarettes are hidden while Reza quits. The code, the cigs tab and its data stay in place.
@@ -77,8 +78,6 @@ const wholeNum = (v, min, max) => {
   const n = Math.round(Number(v));
   return Number.isFinite(n) && n >= min && n <= max ? n : null;
 };
-// Time ranges, as in sleep and work: "23:30-7:15 +15-16".
-const validRanges = (text) => !text || text.split(/\s+/).every((t) => /^\+?\d{1,2}(:\d{2})?-\d{1,2}(:\d{2})?$/.test(t));
 
 // A short message. With { undo: true } it carries an Undo button for the last action.
 function toast(msg, { undo: withUndo = false } = {}) {
@@ -145,18 +144,8 @@ const lastDays = (n) => Array.from({ length: n }, (_, i) => shiftDay(today(), i 
 
 /* ---------- sleep ---------- */
 
-// "23:30-7:15 +15-16": "+" marks a nap; the longest block is the main sleep.
-function parseSleep(text) {
-  return String(text || '').trim().split(/\s+/).filter(Boolean).map((raw) => {
-    const nap = raw.startsWith('+');
-    const m = raw.replace(/^\+/, '').match(/^(\d{1,2}(?::\d{2})?)-(\d{1,2}(?::\d{2})?)$/);
-    if (!m) return null;
-    const toMin = (t) => { const [h, mm = 0] = t.split(':').map(Number); return h * 60 + mm; };
-    const start = toMin(m[1]);
-    const end = toMin(m[2]);
-    return { start, end, dur: (end - start + 1440) % 1440, nap };
-  }).filter(Boolean);
-}
+// Sleep blocks, read leniently (time.js). The longest block is the main sleep.
+const parseSleep = (text) => parseRanges(text).blocks;
 
 function sleepSummary(text) {
   const blocks = parseSleep(text);
@@ -228,6 +217,7 @@ function dueChip(s) {
   return `<span class="due ${cls}">${label}</span>`;
 }
 
+const PENCIL = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M13.6 3.6a1.8 1.8 0 0 1 2.6 2.6L7.4 15 4 16l1-3.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M12.2 5l2.8 2.8" stroke="currentColor" stroke-width="1.5"/></svg>';
 const SPARKLE = '<svg class="spark" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5l1.4 4.1L13.5 7 9.4 8.4 8 12.5 6.6 8.4 2.5 7l4.1-1.4z"/><path d="M13 11.2l.5 1.3 1.3.5-1.3.5-.5 1.3-.5-1.3-1.3-.5 1.3-.5z"/></svg>';
 
 function taskRow(t) {
@@ -240,56 +230,115 @@ function taskRow(t) {
     : `<span class="imp">${esc(t.importance || '')}</span>`;
   return `<li class="task${done ? ' done' : ''}${must ? ' must' : ''}${overdue ? ' overdue' : ''}">
     <input type="checkbox" data-done="${esc(t.id)}"${done ? ' checked' : ''} aria-label="Done: ${esc(t.title)}">
-    <div><div class="ttl">${esc(t.title)}</div>
+    <div><div class="ttl" data-act="edit-task" data-id="${esc(t.id)}">${esc(t.title)}</div>
       <div class="tm">${done ? '' : dueChip(t.deadline)}${tags}</div></div>
     ${imp}
+    <button class="ed" type="button" data-act="edit-task" data-id="${esc(t.id)}" aria-label="Edit task">${PENCIL}</button>
     <button class="x" type="button" data-del="${esc(t.id)}" aria-label="Delete task">×</button>
   </li>`;
 }
 
 const CAL_ICON = '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="4.5" width="14" height="12" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M3 8.5h14M7 2.8v3.4M13 2.8v3.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
 
-// Deadline: type it day first ("24.11", "fri", "tomorrow"), tap a quick pick, or open a calendar.
-// The hidden input holds the date the form submits.
-function dateField(name = 'deadline', label = 'Deadline') {
+// Deadline: a button that opens a small month calendar (Monday first). Dates show day first,
+// for example "Tue 24.11.2026". The hidden input holds the date the form submits (YYYY-MM-DD).
+const WD_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const dateLabel = (key) => (isDateKey(key) ? `${WD_SHORT[weekdayOf(key)]} ${typed(key)}` : 'No deadline');
+
+function dateField(name = 'deadline', label = 'Deadline', value = '') {
+  const v = isDateKey(value) ? value : '';
   return `<div class="datef" data-datef>
     <span class="lbl">${label}</span>
-    <div class="date-in">
-      <input class="date-text" data-date-text placeholder="dd.mm, fri, tomorrow" autocomplete="off" spellcheck="false" aria-label="${label}: day, month, year">
-      <button type="button" class="cal" data-act="date-cal" aria-label="Pick from a calendar">${CAL_ICON}</button>
-      <input class="date-native" type="date" data-date-native tabindex="-1" aria-hidden="true" min="2000-01-01" max="2100-12-31">
+    <div class="date-row">
+      <button type="button" class="date-btn${v ? '' : ' empty'}" data-act="cal-toggle" aria-haspopup="dialog" aria-expanded="false">${CAL_ICON}<span class="date-val">${dateLabel(v)}</span></button>
+      <button type="button" class="date-clear" data-act="cal-clear" aria-label="Remove deadline"${v ? '' : ' hidden'}>×</button>
     </div>
-    <input type="hidden" name="${name}" value="">
-    <div class="date-chips">${quickDates(today()).map(([l, k]) =>
-      `<button type="button" data-act="date-set" data-key="${k}" title="${longDate(k)}">${l}</button>`).join('')}</div>
-    <span class="date-hint" aria-live="polite"></span>
+    <input type="hidden" name="${name}" value="${v}">
+    <div class="cal-pop" role="dialog" aria-label="Choose a date" hidden></div>
   </div>`;
 }
 
-function setDate(field, key, { fromText = false, error = '' } = {}) {
-  field.querySelector('input[type=hidden]').value = key;
-  if (!fromText) field.querySelector('[data-date-text]').value = typed(key);
-  const hint = field.querySelector('.date-hint');
-  hint.textContent = error || longDate(key);
-  hint.classList.toggle('bad', !!error);
-  field.querySelectorAll('[data-act=date-set]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.key === key)));
+function setDate(field, key) {
+  const v = isDateKey(key) ? key : '';
+  field.querySelector('input[type=hidden]').value = v;
+  field.querySelector('.date-val').textContent = dateLabel(v);
+  field.querySelector('.date-btn').classList.toggle('empty', !v);
+  field.querySelector('.date-clear').hidden = !v;
+  closeCal(field);
 }
 
-function importanceSelect() {
+function calGrid(field) {
+  const sel = field.querySelector('input[type=hidden]').value;
+  const month = field.dataset.month;
+  const [y, m] = month.split('-').map(Number);
+  const first = `${month}-01`;
+  const lead = (weekdayOf(first) + 6) % 7; // Monday first
+  const days = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const t = today();
+  const cells = Array.from({ length: lead }, () => '<span></span>');
+  for (let d = 1; d <= days; d += 1) {
+    const key = `${month}-${pad(d)}`;
+    const cls = [key === t && 'today', key === sel && 'sel', key < t && 'past'].filter(Boolean).join(' ');
+    cells.push(`<button type="button" class="${cls}" data-act="cal-day" data-key="${key}" aria-label="${dateLabel(key)}"${key === sel ? ' aria-pressed="true"' : ''}>${d}</button>`);
+  }
+  return `<div class="cal-head">
+      <button type="button" data-act="cal-prev" aria-label="Previous month">‹</button>
+      <span>${MONTH_NAMES[m - 1]} ${y}</span>
+      <button type="button" data-act="cal-next" aria-label="Next month">›</button>
+    </div>
+    <div class="cal-wd">${['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'].map((w) => `<span>${w}</span>`).join('')}</div>
+    <div class="cal-days">${cells.join('')}</div>
+    <div class="cal-foot">
+      <button type="button" data-act="cal-day" data-key="${t}">Today</button>
+      <button type="button" data-act="cal-day" data-key="${shiftDay(t, 1)}">Tomorrow</button>
+      <button type="button" data-act="cal-clear">No deadline</button>
+    </div>`;
+}
+
+function openCal(field) {
+  closeAllCals();
+  const sel = field.querySelector('input[type=hidden]').value;
+  field.dataset.month = (sel || today()).slice(0, 7);
+  const pop = field.querySelector('.cal-pop');
+  pop.innerHTML = calGrid(field);
+  pop.hidden = false;
+  field.querySelector('.date-btn').setAttribute('aria-expanded', 'true');
+  pop.scrollIntoView?.({ block: 'nearest' });
+}
+
+function moveCal(field, n) {
+  const [y, m] = field.dataset.month.split('-').map(Number);
+  const t = new Date(Date.UTC(y, m - 1 + n, 1));
+  field.dataset.month = `${t.getUTCFullYear()}-${pad(t.getUTCMonth() + 1)}`;
+  field.querySelector('.cal-pop').innerHTML = calGrid(field);
+}
+
+function closeCal(field) {
+  const pop = field.querySelector('.cal-pop');
+  if (!pop || pop.hidden) return;
+  pop.hidden = true;
+  pop.innerHTML = '';
+  field.querySelector('.date-btn').setAttribute('aria-expanded', 'false');
+}
+
+const closeAllCals = () => document.querySelectorAll('[data-datef]').forEach(closeCal);
+
+function importanceSelect(current = 'Medium') {
   return `<label class="impf"><span class="lbl">Importance</span><select name="importance">${IMP.map((i) =>
-    `<option${i === 'Medium' ? ' selected' : ''}>${i}</option>`).join('')}<option value="${CLAUDE}">✨ Let Claude decide</option></select></label>`;
+    `<option${i === current ? ' selected' : ''}>${i}</option>`).join('')}<option value="${CLAUDE}"${current === CLAUDE ? ' selected' : ''}>✨ Let Claude decide</option></select></label>`;
 }
 
-// Tags: tap one you used before, or type a new one (Enter or comma adds it).
-function tagField() {
-  const known = knownTags();
+// Tags: type a new one (Enter or comma adds it), or tap one you used before. All of them are
+// listed under the box; typing narrows the list, which helps avoid spelling variants.
+function tagField(selected = []) {
+  const known = [...new Set([...knownTags(), ...selected])];
   return `<div class="tagf" data-tagf>
     <span class="lbl">Tags</span>
-    <div class="tag-pick">${known.map((g, i) =>
-      `<button type="button" class="tchip${i >= 12 ? ' extra' : ''}" data-act="tag-toggle" data-tag="${esc(g)}" aria-pressed="false">#${esc(g)}</button>`).join('')}
-      <input class="tag-new" data-tag-new placeholder="${known.length ? 'new tag' : 'add a tag, e.g. study'}" autocomplete="off" spellcheck="false" aria-label="New tag">
-    </div>
-    <input type="hidden" name="tags" value="">
+    <input class="tag-new" data-tag-new placeholder="${known.length ? 'type a new tag, or tap one below' : 'type a tag, e.g. study, then Enter'}" autocomplete="off" spellcheck="false" aria-label="New tag">
+    <div class="tag-pick">${known.map((g) =>
+      `<button type="button" class="tchip" data-act="tag-toggle" data-tag="${esc(g)}" aria-pressed="${selected.includes(g)}">#${esc(g)}</button>`).join('')}</div>
+    <input type="hidden" name="tags" value="${esc(selected.join(', '))}">
   </div>`;
 }
 
@@ -301,6 +350,7 @@ function syncTags(field) {
 // Adds what is typed in the new-tag box as a selected chip, or selects the matching existing one.
 function commitTag(field) {
   const box = field.querySelector('[data-tag-new]');
+  const list = field.querySelector('.tag-pick');
   for (const tag of parseTags(box.value)) {
     let chip = [...field.querySelectorAll('.tchip')].find((b) => b.dataset.tag === tag);
     if (!chip) {
@@ -310,7 +360,7 @@ function commitTag(field) {
       chip.dataset.act = 'tag-toggle';
       chip.dataset.tag = tag;
       chip.textContent = `#${tag}`;
-      box.before(chip);
+      list.append(chip);
     }
     chip.setAttribute('aria-pressed', 'true');
   }
@@ -321,7 +371,6 @@ function commitTag(field) {
 
 function filterTags(field, text) {
   const q = parseTags(text)[0] || '';
-  field.classList.toggle('filtering', !!q);
   field.querySelectorAll('.tchip').forEach((b) => {
     b.hidden = !!q && !b.dataset.tag.includes(q) && b.getAttribute('aria-pressed') !== 'true';
   });
@@ -342,20 +391,10 @@ function quickForm({ open = false } = {}) {
   </form>`;
 }
 
-// Reads the deadline from a form, or explains why it can't. Returns null when the typed date is unreadable.
-function formDeadline(form) {
-  const field = form.querySelector('[data-datef]');
-  if (!field) return '';
-  const text = field.querySelector('[data-date-text]').value;
-  const r = parseDateInput(text, today());
-  if (r.error) {
-    setDate(field, '', { fromText: true, error: r.error });
-    field.querySelector('[data-date-text]').focus();
-    toast("Couldn't read that date");
-    return null;
-  }
-  return r.key;
-}
+const formDeadline = (form) => {
+  const v = form.querySelector('[data-datef] input[type=hidden]')?.value || '';
+  return isDateKey(v) ? v : '';
+};
 
 function formImportance(form) {
   const v = String(new FormData(form).get('importance') || '');
@@ -375,7 +414,6 @@ function addTask(form) {
   const title = String(f.get('title') || '').trim();
   if (!title) return;
   const deadline = formDeadline(form);
-  if (deadline === null) return;
   write('tasks', {
     id: newId(),
     title: title.slice(0, 300),
@@ -433,66 +471,84 @@ function viewTasks() {
 
 /* ---------- home ---------- */
 
-// Total minutes of a set of time ranges, as typed for work: "9-12:30 13:30-18".
-const rangesTotal = (text) => parseSleep(text).reduce((s, b) => s + b.dur, 0);
+const DURATIONS = [['studyMin', 'Study'], ['choresMin', 'Chores'], ['walkingMin', 'Walk'], ['gymMin', 'Gym']];
+
+// The total next to sleep or work. Parts that can't be read are still saved as typed, and get a
+// small "?" that explains this on hover or tap.
+function rangeTotalHtml(text, opts) {
+  const { blocks, bad } = parseRanges(text, opts);
+  const tot = blocks.reduce((sum, b) => sum + b.dur, 0);
+  return `${blocks.length ? fmtDur(tot) : ''}${bad ? `<span class="warn" title="Part of this isn't a from-to time. It's saved as typed; Claude can tidy it later.">?</span>` : ''}`;
+}
 
 function logCard() {
   const r = dayMap().get(today()) || {};
   const radios = (name, cur) => [1, 2, 3, 4, 5].map((n) =>
     `<label><input type="radio" name="${name}" value="${n}"${cur === n ? ' checked' : ''}><span>${n}</span></label>`).join('');
-  const sl = sleepSummary(r.sleep);
-  const wk = rangesTotal(r.work);
-  const mins = (name, label, v) => `<label><span class="lh">${label}</span><input name="${name}" type="number" min="0" max="1440" inputmode="numeric" placeholder="min" value="${v ?? ''}"></label>`;
+  const dur = ([name, label]) => `<div class="trow dur">
+      <label for="f-${name}">${label}</label>
+      <input id="f-${name}" name="${name}" inputmode="decimal" placeholder="h:mm" value="${fmtHM(r[name] ?? null)}" autocomplete="off" spellcheck="false">
+      <button type="button" class="step" data-act="dur-add" data-name="${name}" data-add="15" aria-label="Add 15 minutes to ${label}">+15m</button>
+      <button type="button" class="step" data-act="dur-add" data-name="${name}" data-add="60" aria-label="Add one hour to ${label}">+1h</button>
+    </div>`;
   return `<form class="card log" id="log" autocomplete="off">
     <div class="card-head"><h2>Today</h2><span class="muted small" id="log-state">${esc(ui.logSaved)}</span></div>
-    <label><span class="lh">Sleep <b class="tot" id="sleep-tot">${sl ? fmtDur(sl.total) : ''}</b></span><input name="sleep" value="${esc(r.sleep)}" placeholder="23:30-7:15 +15-16" spellcheck="false"></label>
-    <div class="scale"><span>Sleep quality</span><div class="dots">${radios('sleepQuality', r.sleepQuality)}</div></div>
-    <label><span class="lh">Work <b class="tot" id="work-tot">${wk ? fmtDur(wk) : ''}</b></span><input name="work" value="${esc(r.work)}" placeholder="9-12:30 13:30-18" spellcheck="false"></label>
-    <div class="grid2">
-      ${mins('studyMin', 'Study, min', r.studyMin)}
-      ${mins('choresMin', 'Chores, min', r.choresMin)}
-      ${mins('walkingMin', 'Walk, min', r.walkingMin)}
-      ${mins('gymMin', 'Gym, min', r.gymMin)}
-    </div>
-    <div class="scale"><span>Energy</span><div class="dots">${radios('energy', r.energy)}</div></div>
-    <div class="scale"><span>Mood</span><div class="dots">${radios('mood', r.mood)}</div></div>
-    <label class="note"><span class="lh">Note</span><textarea name="note" rows="3" placeholder="Anything. Enter starts a new line.">${esc(r.note)}</textarea></label>
+    <section class="sec">
+      <div class="sec-h"><h3>Sleep</h3><span class="tot" id="sleep-tot">${rangeTotalHtml(r.sleep)}</span></div>
+      <input name="sleep" value="${esc(r.sleep)}" placeholder="23:30-7:15, 14-15" spellcheck="false" aria-label="Sleep, from-to">
+      <div class="scale"><span>Quality</span><div class="dots">${radios('sleepQuality', r.sleepQuality)}</div></div>
+    </section>
+    <section class="sec">
+      <div class="sec-h"><h3>Time</h3><span class="muted small">h:mm</span></div>
+      <div class="trow work"><label for="f-work">Work</label><input id="f-work" name="work" value="${esc(r.work)}" placeholder="9-12:30, 13:30-18" spellcheck="false"><span class="tot" id="work-tot">${rangeTotalHtml(r.work, { daytime: true })}</span></div>
+      ${DURATIONS.map(dur).join('')}
+    </section>
+    <section class="sec">
+      <div class="sec-h"><h3>Feeling</h3></div>
+      <div class="scale"><span>Energy</span><div class="dots">${radios('energy', r.energy)}</div></div>
+      <div class="scale"><span>Mood</span><div class="dots">${radios('mood', r.mood)}</div></div>
+    </section>
+    <section class="sec note">
+      <div class="sec-h"><h3>Note</h3></div>
+      <textarea name="note" rows="3" aria-label="Note" placeholder="Anything. Enter starts a new line.">${esc(r.note)}</textarea>
+    </section>
   </form>`;
 }
 
+// Saves the whole day on every change. Sleep and work are saved exactly as typed; a duration
+// that can't be read keeps its last value until it can.
 function onLog(form) {
   const f = new FormData(form);
   const key = today();
   const prev = dayMap().get(key) || {};
-  const sleepIn = String(f.get('sleep') || '').trim();
-  const workIn = String(f.get('work') || '').trim();
-  const sleepOk = validRanges(sleepIn);
-  const workOk = validRanges(workIn);
-  const mins = (name) => wholeNum(f.get(name), 0, 1440);
+  const sleep = String(f.get('sleep') || '').trim();
+  const work = String(f.get('work') || '').trim();
+  let unreadable = 0;
+  const durations = Object.fromEntries(DURATIONS.map(([name]) => {
+    const r = parseDuration(f.get(name));
+    form.querySelector(`[name=${name}]`)?.classList.toggle('bad', !!r.error);
+    if (r.error) unreadable += 1;
+    return [name, r.error ? (prev[name] ?? null) : r.min];
+  }));
   write('days', {
     ...prev,
     date: key,
-    sleep: sleepOk ? sleepIn : (prev.sleep || ''),
+    sleep,
     sleepQuality: wholeNum(f.get('sleepQuality'), 1, 5),
-    work: workOk ? workIn : (prev.work || ''),
-    studyMin: mins('studyMin'),
-    choresMin: mins('choresMin'),
-    walkingMin: mins('walkingMin'),
+    work,
+    ...durations,
     gymType: prev.gymType || '',
-    gymMin: mins('gymMin'),
     energy: wholeNum(f.get('energy'), 1, 5),
     mood: wholeNum(f.get('mood'), 1, 5),
     note: String(f.get('note') || '').replace(/\s+$/, ''),
   }, 'Edited Today');
-  ui.logSaved = !sleepOk ? 'sleep: use 23:30-7:15 +15-16' : !workOk ? 'work: use 9-12:30 14-18' : `saved ${clockAt(new Date())}`;
+  ui.logSaved = unreadable ? 'times: use h:mm, e.g. 2:45' : `saved ${clockAt(new Date())}`;
   const st = document.getElementById('log-state');
   if (st) st.textContent = ui.logSaved;
-  const sl = sleepOk ? sleepSummary(sleepIn) : null;
-  const wk = workOk ? rangesTotal(workIn) : 0;
   const s = document.getElementById('sleep-tot');
-  if (s) s.textContent = sl ? fmtDur(sl.total) : '';
+  if (s) s.innerHTML = rangeTotalHtml(sleep);
   const w = document.getElementById('work-tot');
-  if (w) w.textContent = wk ? fmtDur(wk) : '';
+  if (w) w.innerHTML = rangeTotalHtml(work, { daytime: true });
 }
 
 // Reserved space on Home: a sentence or a small picture, to be decided.
@@ -537,39 +593,37 @@ const isCurrent = (p) => ['new', 'useful', 'tasked'].includes(p.status)
   && (!p.deadline || p.deadline >= today());
 const byRank = (a, b) => (a.rank ?? 99) - (b.rank ?? 99);
 
+const KIND_ONE = { paper: 'Paper', podcast: 'Podcast', event: 'Event', job: 'Job' };
+
+function miniPick(p) {
+  const url = safeUrl(p.url);
+  const meta = [p.source, p.date && `on ${p.date}`, p.deadline && `apply by ${p.deadline}`].filter(Boolean).map(esc).join(' · ');
+  const title = url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(p.title)}</a>` : esc(p.title);
+  return `<li class="mp">
+    <span class="kbadge k-${esc(p.kind)}">${esc(KIND_ONE[p.kind] || p.kind)}</span>
+    <div class="mp-body"><div class="mp-title">${title}</div>${meta ? `<div class="mp-meta">${meta}</div>` : ''}</div>
+  </li>`;
+}
+
 function viewHome() {
   const open = liveTasks().filter((t) => t.status !== 'done');
   const sorted = sortTasks(open);
-  const overdue = open.filter((t) => urgency(t) === 0).length;
-  const dueToday = open.filter((t) => urgency(t) === 1).length;
   const part = minutesAt(new Date()) < 720 ? 'morning' : minutesAt(new Date()) < 1080 ? 'afternoon' : 'evening';
   const picks = livePicks().filter(isCurrent).sort(byRank).slice(0, 4);
   return `
   <header class="hero">
-    <div>
-      <p class="eyebrow">KW ${weekOf(today())} · ${parseDay(today()).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}</p>
-      <h1>Good ${part}<em>.</em></h1>
-    </div>
-    <dl class="kpis">
-      <div><dt>overdue</dt><dd class="${overdue ? 'hot' : ''}">${overdue}</dd></div>
-      <div><dt>due today</dt><dd>${dueToday}</dd></div>
-      <div><dt>open</dt><dd>${open.length}</dd></div>
-    </dl>
+    <p class="eyebrow">${parseDay(today()).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}</p>
+    <h1>Good ${part}<em>.</em></h1>
   </header>
   <div class="home">
     <div class="side">
       ${logCard()}
       ${SHOW_CIGS ? `<section class="card cig" id="cigs">${cigInner()}</section>` : ''}
+      ${spotCard()}
       <section class="card picks-card">
         <div class="card-head"><h2>Picks</h2><a class="link" href="#picks">open →</a></div>
-        <ol class="mini-picks">${picks.map((p) => {
-          const url = safeUrl(p.url);
-          return `<li><span class="kind">${esc(kindLabel(p.kind))}</span>${url
-            ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(p.title)}</a>`
-            : `<span class="ttl">${esc(p.title)}</span>`}</li>`;
-        }).join('') || '<li class="muted">No current picks.</li>'}</ol>
+        <ol class="mini-picks">${picks.map(miniPick).join('') || '<li class="muted">No current picks.</li>'}</ol>
       </section>
-      ${spotCard()}
     </div>
     <section class="card focus">
       <div class="card-head"><h2>Tasks</h2>${sortControl()}<a class="link" href="#tasks">all →</a></div>
@@ -578,6 +632,79 @@ function viewHome() {
       ${quickForm()}
     </section>
   </div>`;
+}
+
+// Overdue, due today and open, in the top bar on every page.
+function paintCounts() {
+  const el = $('#counts');
+  if (!el) return;
+  const open = liveTasks().filter((t) => t.status !== 'done');
+  const overdue = open.filter((t) => urgency(t) === 0).length;
+  const dueToday = open.filter((t) => urgency(t) === 1).length;
+  el.innerHTML = `<span class="${overdue ? 'hot' : ''}"><b>${overdue}</b> overdue</span><span><b>${dueToday}</b> due today</span><span><b>${open.length}</b> open</span>`;
+}
+
+/* ---------- edit a task ---------- */
+
+// A pop-up with every field of one task. It lives outside the page view, so a sync that
+// redraws the page does not close it.
+function openEdit(id) {
+  const t = liveTasks().find((x) => x.id === id);
+  const dlg = $('#edit');
+  if (!t || !dlg) return;
+  const imp = t.claudeDecides ? CLAUDE : (IMP.includes(t.importance) ? t.importance : 'Medium');
+  dlg.innerHTML = `<form id="edit-form" class="quick open always edit-form" data-id="${esc(t.id)}" autocomplete="off">
+    <div class="edit-head"><h2 id="edit-title">Edit task</h2><button type="button" class="x" data-act="edit-close" aria-label="Close">×</button></div>
+    <label class="ef"><span class="lbl">Title</span><input name="title" required maxlength="300" value="${esc(t.title)}"></label>
+    <label class="ef"><span class="lbl">Description</span><textarea name="description" rows="3" placeholder="Optional">${esc(t.description)}</textarea></label>
+    <div class="q-more">${dateField('deadline', 'Deadline', t.deadline)}${importanceSelect(imp)}${tagField(t.tags || [])}</div>
+    <label class="ef done-check"><input type="checkbox" name="done"${t.status === 'done' ? ' checked' : ''}> Done</label>
+    <div class="edit-foot">
+      <button type="button" class="ghost danger" data-act="edit-delete">Delete</button>
+      <span class="grow"></span>
+      <button type="button" class="ghost" data-act="edit-close">Cancel</button>
+      <button type="submit" class="primary">Save</button>
+    </div>
+  </form>`;
+  dlg.showModal();
+  if (window.matchMedia?.('(min-width: 901px)').matches) dlg.querySelector('input[name=title]').focus();
+}
+
+function closeEdit() {
+  const dlg = $('#edit');
+  if (dlg?.open) dlg.close();
+}
+
+function saveEdit(form) {
+  const t = store.rows('tasks').find((x) => x.id === form.dataset.id);
+  if (!t) return closeEdit();
+  const f = new FormData(form);
+  const title = String(f.get('title') || '').trim();
+  if (!title) return;
+  const done = f.get('done') === 'on';
+  write('tasks', {
+    ...t,
+    title: title.slice(0, 300),
+    description: String(f.get('description') || '').trim(),
+    deadline: formDeadline(form),
+    ...formImportance(form),
+    tags: formTags(form),
+    status: done ? 'done' : 'open',
+    doneAt: done ? (t.doneAt || nowIso()) : '',
+  }, 'Edited task');
+  closeEdit();
+  render();
+  toast('Task saved', { undo: true });
+}
+
+function deleteFromEdit() {
+  const id = $('#edit-form')?.dataset.id;
+  const t = store.rows('tasks').find((x) => x.id === id);
+  closeEdit();
+  if (!t) return;
+  write('tasks', { ...t, deletedAt: nowIso() }, 'Deleted task');
+  render();
+  toast(`Deleted “${t.title.slice(0, 40)}”`, { undo: true });
 }
 
 /* ---------- picks ---------- */
@@ -613,7 +740,6 @@ function taskFromPick(form, id) {
   const p = livePicks().find((x) => x.id === id);
   if (!p) return;
   const deadline = formDeadline(form);
-  if (deadline === null) return;
   undo.group('Task from pick', () => {
     write('tasks', {
       id: newId(),
@@ -771,6 +897,7 @@ function syncLabel() {
 }
 
 function paintSync() {
+  paintCounts();
   const label = syncLabel();
   const el = $('#sync');
   if (el) el.textContent = label;
@@ -985,7 +1112,7 @@ function saveDrafts() {
   return [...document.querySelectorAll('#view form.quick[data-form=quick]')].map((f) => ({
     open: f.classList.contains('open'),
     title: f.querySelector('input[name=title]')?.value || '',
-    date: f.querySelector('[data-date-text]')?.value || '',
+    date: f.querySelector('[data-datef] input[type=hidden]')?.value || '',
     imp: f.querySelector('select[name=importance]')?.value || '',
     tags: [...f.querySelectorAll('.tchip[aria-pressed=true]')].map((b) => b.dataset.tag),
     newTag: f.querySelector('[data-tag-new]')?.value || '',
@@ -999,11 +1126,7 @@ function restoreDrafts(drafts) {
     if (d.open) f.classList.add('open');
     f.querySelector('input[name=title]').value = d.title;
     const field = f.querySelector('[data-datef]');
-    if (field && d.date) {
-      field.querySelector('[data-date-text]').value = d.date;
-      const r = parseDateInput(d.date, today());
-      setDate(field, r.key, { fromText: true, error: r.error });
-    }
+    if (field && d.date) setDate(field, d.date);
     if (d.imp) f.querySelector('select[name=importance]').value = d.imp;
     const tf = f.querySelector('[data-tagf]');
     if (tf) {
@@ -1033,6 +1156,7 @@ function render({ keepDrafts = true } = {}) {
   restoreDrafts(drafts);
   paintSync();
   paintUndo();
+  paintCounts();
 }
 
 function renderSoft() {
@@ -1054,6 +1178,8 @@ document.addEventListener('focusout', () => {
 });
 
 document.addEventListener('click', (e) => {
+  if (!e.target.closest('.cal-pop') && !e.target.closest('[data-act=cal-toggle]')) closeAllCals();
+  if (e.target.id === 'edit') return closeEdit(); // a click on the dimmed backdrop
   const del = e.target.closest('[data-del]');
   if (del) {
     const t = store.rows('tasks').find((x) => x.id === del.dataset.del);
@@ -1073,14 +1199,24 @@ document.addEventListener('click', (e) => {
     applyLook();
     return render();
   }
-  if (act === 'date-set') return setDate(el.closest('[data-datef]'), el.dataset.key);
-  if (act === 'date-cal') {
+  if (act.startsWith('cal-')) {
     const field = el.closest('[data-datef]');
-    const native = field.querySelector('[data-date-native]');
-    native.value = field.querySelector('input[type=hidden]').value || today();
-    try { native.showPicker(); } catch { native.focus(); native.click(); }
-    return;
+    if (act === 'cal-toggle') return field.querySelector('.cal-pop').hidden ? openCal(field) : closeCal(field);
+    if (act === 'cal-prev') return moveCal(field, -1);
+    if (act === 'cal-next') return moveCal(field, 1);
+    if (act === 'cal-day') return setDate(field, el.dataset.key);
+    if (act === 'cal-clear') return setDate(field, '');
   }
+  if (act === 'dur-add') {
+    const form = el.closest('form');
+    const box = form.querySelector(`[name=${el.dataset.name}]`);
+    const cur = parseDuration(box.value).min || 0;
+    box.value = fmtHM(Math.min(1440, cur + Number(el.dataset.add)));
+    return onLog(form);
+  }
+  if (act === 'edit-task') return openEdit(id);
+  if (act === 'edit-close') return closeEdit();
+  if (act === 'edit-delete') return deleteFromEdit();
   if (act === 'tag-toggle') {
     el.setAttribute('aria-pressed', String(el.getAttribute('aria-pressed') !== 'true'));
     return syncTags(el.closest('[data-tagf]'));
@@ -1122,9 +1258,10 @@ document.addEventListener('click', (e) => {
 
 document.addEventListener('change', (e) => {
   const t = e.target;
-  if (t.matches?.('[data-date-native]')) {
-    if (t.value) setDate(t.closest('[data-datef]'), t.value);
-    return;
+  // A duration is shown back as h:mm once you leave the box, so "2.5h" becomes "2:30".
+  if (t.form?.id === 'log' && DURATIONS.some(([n]) => n === t.name)) {
+    const r = parseDuration(t.value);
+    if (!r.error) t.value = fmtHM(r.min);
   }
   if (t.dataset && t.dataset.done) {
     const task = store.rows('tasks').find((x) => x.id === t.dataset.done);
@@ -1140,10 +1277,6 @@ document.addEventListener('change', (e) => {
 
 document.addEventListener('input', (e) => {
   const t = e.target;
-  if (t.matches?.('[data-date-text]')) {
-    const r = parseDateInput(t.value, today());
-    return setDate(t.closest('[data-datef]'), r.key, { fromText: true, error: r.error });
-  }
   if (t.matches?.('[data-tag-new]')) {
     const field = t.closest('[data-tagf]');
     if (/[,;]/.test(t.value)) return commitTag(field);
@@ -1170,6 +1303,10 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     return commitTag(t.closest('[data-tagf]'));
   }
+  if (e.key === 'Escape' && document.querySelector('.cal-pop:not([hidden])')) {
+    e.preventDefault();
+    return closeAllCals();
+  }
   if (e.key === 'Escape' && t.closest?.('form.quick:not(.always)') && !hasDraft()) {
     t.closest('form.quick').classList.remove('open');
     t.blur();
@@ -1181,6 +1318,7 @@ document.addEventListener('submit', (e) => {
   const form = e.target;
   if (form.dataset.pick) return taskFromPick(form, form.dataset.pick);
   if (form.dataset.form === 'quick') return addTask(form);
+  if (form.id === 'edit-form') return saveEdit(form);
   if (form.id === 'connect-form') return saveConnection(form);
   if (form.id === 'profile-form') return saveProfile(form);
   if (form.id === 'import-form') return importPicks(form);
@@ -1195,6 +1333,8 @@ function boot() {
   document.addEventListener('visibilitychange', () => { if (!document.hidden) runSync(); });
   setInterval(() => runSync(), 5 * 60 * 1000);
 }
+
+$('#edit')?.addEventListener('close', () => { $('#edit').innerHTML = ''; });
 
 if (!location.hash) location.hash = '#home';
 window.addEventListener('hashchange', render);

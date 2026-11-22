@@ -1,67 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseDateInput, typed, longDate, quickDates, nextWeekday } from '../dates.js';
+import { typed, longDate, weekdayOf, keyOf } from '../dates.js';
 import { UndoHistory } from '../undo.js';
 
-const T = '2026-11-22'; // a Sunday
-const p = (s, today = T) => parseDateInput(s, today).key;
-
-test('day first, year optional', () => {
-  assert.equal(p('24.11'), '2026-11-24');
-  assert.equal(p('24/11'), '2026-11-24');
-  assert.equal(p('24-11'), '2026-11-24');
-  assert.equal(p('24 11'), '2026-11-24');
-  assert.equal(p('24.11.2026'), '2026-11-24');
-  assert.equal(p('24.11.27'), '2027-11-24');
-  assert.equal(p('3.12'), '2026-12-03');
-  assert.equal(p('2026-11-24'), '2026-11-24');
-});
-
-test('a day alone means this month, or next month once it has passed', () => {
-  assert.equal(p('28'), '2026-11-28');
-  assert.equal(p('5'), '2026-12-05');
-  assert.equal(p('5', '2026-12-20'), '2027-01-05');
-});
-
-test('without a year, a date long gone means next year; a recent one stays this year', () => {
-  assert.equal(p('15.01'), '2027-01-15');
-  assert.equal(p('20.11'), '2026-11-20', 'two days ago stays, so an overdue date can be entered');
-});
-
-test('words, weekdays, months and offsets', () => {
-  assert.equal(p('today'), T);
-  assert.equal(p('tomorrow'), '2026-11-23');
-  assert.equal(p('tmr'), '2026-11-23');
-  assert.equal(p('fri'), '2026-11-27');
-  assert.equal(p('friday'), '2026-11-27');
-  assert.equal(p('sun'), T, 'the same weekday is today');
-  assert.equal(p('next sun'), '2026-11-29');
-  assert.equal(p('+3'), '2026-11-25');
-  assert.equal(p('+2w'), '2026-12-06');
-  assert.equal(p('10d'), '2026-12-02');
-  assert.equal(p('24 nov'), '2026-11-24');
-  assert.equal(p('3 jan'), '2027-01-03');
-  assert.equal(p('24 december 2026'), '2026-12-24');
-});
-
-test('impossible or unreadable dates are refused, never guessed', () => {
-  for (const s of ['31.02', '0001-02-12', '32', '12.13', 'soon', '24.11.1999', '2.3.4.5']) {
-    const r = parseDateInput(s, T);
-    assert.equal(r.key, '', s);
-    assert.ok(r.error, s);
-  }
-  assert.deepEqual(parseDateInput('  ', T), { key: '' });
-});
-
-test('display helpers and quick picks', () => {
+test('dates show day first', () => {
   assert.equal(typed('2026-11-24'), '24.11.2026');
   assert.equal(longDate('2026-11-24'), 'Tue 24 Nov 2026');
-  const q = Object.fromEntries(quickDates(T));
-  assert.equal(q.Today, T);
-  assert.equal(q.Tomorrow, '2026-11-23');
-  assert.equal(q.Sat, '2026-11-28');
-  assert.equal(q['Next Mon'], '2026-11-23');
-  assert.equal(nextWeekday('2026-11-23', 1, { after: true }), '2026-11-30');
+  assert.equal(weekdayOf('2026-11-23'), 1);
+  assert.equal(keyOf(2026, 3, 5), '2026-03-05');
+  assert.equal(typed('nope'), '');
 });
 
 test('undo keeps one entry per action, newest first, within a limit', () => {
