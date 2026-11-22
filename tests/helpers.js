@@ -1,4 +1,4 @@
-import { TABS, APP_TABS, toRow } from '../schema.js';
+import { TABS, APP_TABS, toRow, SCHEMA_VERSION } from '../schema.js';
 import { createBridge } from '../bridge.js';
 import { FakeSheet, loadScript, scriptFetch, TEST_KEY } from './gas.js';
 
@@ -12,7 +12,7 @@ export class MemStorage {
 // Builds { tab: [header, ...rows] }, the shape a pull returns.
 export function buildRaw(recs = {}) {
   const settings = recs.settings ?? [
-    { key: 'schema_version', value: '1', updatedAt: '2026-11-17T02:25:00Z' },
+    { key: 'schema_version', value: String(SCHEMA_VERSION), updatedAt: '2026-11-17T02:25:00Z' },
     { key: 'timezone', value: 'Europe/Berlin', updatedAt: '2026-11-17T02:25:00Z' },
     { key: 'day_rollover_hour', value: '4', updatedAt: '2026-11-17T02:25:00Z' },
   ];

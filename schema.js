@@ -2,7 +2,8 @@
 // Each column is [sheet header, app field, type]. Types: text, int, bool, tags.
 // Rows are read and written by header name, never by position.
 
-export const SCHEMA_VERSION = 1;
+// 2 (2026-11-22): days gained sleep_quality, work, study_min, chores_min after sleep.
+export const SCHEMA_VERSION = 2;
 
 const config = { timezone: 'Europe/Berlin', rollover: 4 };
 
@@ -38,7 +39,12 @@ export const TABS = {
     cols: [
       ['date', 'date', 'text'],
       ['sleep', 'sleep', 'text'],
+      ['sleep_quality', 'sleepQuality', 'int'],
+      ['work', 'work', 'text'],
+      ['study_min', 'studyMin', 'int'],
+      ['chores_min', 'choresMin', 'int'],
       ['walking_min', 'walkingMin', 'int'],
+      // Kept for older rows. The app no longer asks for it and leaves it as it was.
       ['gym_type', 'gymType', 'text'],
       ['gym_min', 'gymMin', 'int'],
       ['energy', 'energy', 'int'],

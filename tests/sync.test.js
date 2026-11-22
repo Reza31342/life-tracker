@@ -75,7 +75,7 @@ test('a renamed column stops the sync before anything is written', async () => {
 });
 
 test('a sheet on another schema version is refused', () => {
-  const raw = buildRaw({ settings: [{ key: 'schema_version', value: '2', updatedAt: '2026-11-17T00:00:00Z' }] });
+  const raw = buildRaw({ settings: [{ key: 'schema_version', value: '99', updatedAt: '2026-11-17T00:00:00Z' }] });
   assert.throws(() => parseSnapshot(raw), SchemaError);
 });
 

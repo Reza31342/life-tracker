@@ -1,13 +1,41 @@
 import { Store, newId } from './store.js';
 import {
-  APP_TABS, PICK_STATUSES, GYM_TYPES, SchemaError, ms, isDateKey, dayDiff, shiftDay,
+  APP_TABS, PICK_STATUSES, SchemaError, ms, isDateKey, dayDiff, shiftDay,
   logicalDay, clockAt, minutesAt,
 } from './schema.js';
 import { createBridge, isBridgeUrl, BridgeError } from './bridge.js';
 import { syncOnce } from './sync.js';
+import { parseDateInput, typed, longDate, quickDates } from './dates.js';
+import { UndoHistory } from './undo.js';
+
+// Cigarettes are hidden while Reza quits. The code, the cigs tab and its data stay in place.
+const SHOW_CIGS = false;
 
 const store = new Store(localStorage);
+const undo = new UndoHistory();
 const ui = { pickTab: 'current', pickKind: 'paper', openPick: null, taskTag: 'all', logSaved: '' };
+
+// Look and task sort order: per device, not synced.
+const PREFS_KEY = 'life-tracker.prefs';
+const prefs = (() => {
+  try { return { theme: 'light', accent: 'ink', sort: 'urgency', ...JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') }; } catch { return { theme: 'light', accent: 'ink', sort: 'urgency' }; }
+})();
+const savePrefs = () => { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch { /* storage full */ } };
+const THEMES = [['light', 'Light'], ['dark', 'Dark'], ['system', 'System']];
+const ACCENTS = [['ink', 'Ink'], ['clay', 'Clay'], ['sage', 'Sage'], ['ocean', 'Ocean'], ['plum', 'Plum']];
+const darkQuery = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+
+// Same logic as the small script in index.html, which applies it before the first paint.
+function applyLook() {
+  const dark = prefs.theme === 'dark' || (prefs.theme === 'system' && !!darkQuery?.matches);
+  const root = document.documentElement;
+  root.dataset.theme = dark ? 'dark' : 'light';
+  root.dataset.accent = ACCENTS.some(([v]) => v === prefs.accent) ? prefs.accent : 'ink';
+  const meta = document.querySelector('meta[name=theme-color]');
+  if (meta) meta.content = dark ? '#16130F' : '#F3EEE3';
+}
+applyLook();
+darkQuery?.addEventListener?.('change', () => { if (prefs.theme === 'system') applyLook(); });
 const PROFILE_KEYS = ['profile_papers', 'profile_podcasts', 'profile_events', 'profile_jobs', 'profile_avoid'];
 const PROFILE_LABELS = {
   profile_papers: 'Papers',
@@ -29,6 +57,8 @@ const KINDS = [['paper', 'Papers'], ['podcast', 'Podcasts'], ['event', 'Events']
 const kindLabel = (k) => (KINDS.find((x) => x[0] === k) || [k, k])[1];
 const IMP = ['MUST DO', 'High', 'Medium', 'Low'];
 const IMP_RANK = { 'MUST DO': 0, High: 1, Medium: 2, Low: 3 };
+const CLAUDE = 'claude'; // the importance choice "Let Claude decide"
+const impRank = (t) => (t.claudeDecides ? 4 : IMP_RANK[t.importance] ?? 5);
 
 const safeUrl = (u) => { try { const x = new URL(String(u)); return /^https?:$/.test(x.protocol) ? x.href : ''; } catch { return ''; } };
 const parseDay = (s) => { if (!isDateKey(s)) return null; const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
@@ -47,20 +77,63 @@ const wholeNum = (v, min, max) => {
   const n = Math.round(Number(v));
   return Number.isFinite(n) && n >= min && n <= max ? n : null;
 };
-const validSleep = (text) => !text || text.split(/\s+/).every((t) => /^\+?\d{1,2}(:\d{2})?-\d{1,2}(:\d{2})?$/.test(t));
+// Time ranges, as in sleep and work: "23:30-7:15 +15-16".
+const validRanges = (text) => !text || text.split(/\s+/).every((t) => /^\+?\d{1,2}(:\d{2})?-\d{1,2}(:\d{2})?$/.test(t));
 
-function toast(msg) {
+// A short message. With { undo: true } it carries an Undo button for the last action.
+function toast(msg, { undo: withUndo = false } = {}) {
   const t = $('#toast');
-  t.textContent = msg;
+  t.innerHTML = `<span>${esc(msg)}</span>${withUndo ? '<button type="button" data-act="undo">Undo</button>' : ''}`;
+  t.classList.toggle('actionable', withUndo);
   t.classList.add('show');
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => t.classList.remove('show'), 2200);
+  toast.timer = setTimeout(() => t.classList.remove('show', 'actionable'), withUndo ? 5000 : 2200);
 }
 
-// All writes go through here: stamp the change, queue it, and sync soon.
-function write(tab, rec) {
+const keyField = (tab) => (tab === 'days' ? 'date' : tab === 'settings' ? 'key' : 'id');
+const current = (tab, key) => store.rows(tab).find((r) => r[keyField(tab)] === key) || null;
+
+// All writes go through here: remember the row as it was (for undo), stamp the change, queue it,
+// and sync soon. label names the action in the undo history.
+function write(tab, rec, label = 'Change') {
+  const key = rec[keyField(tab)];
+  const before = current(tab, key);
+  undo.record(label, tab, key, before ? (({ _row, ...r }) => r)(before) : null);
   store.enqueue(tab, { ...rec, updatedAt: nowIso(), updatedBy: 'app' });
   scheduleSync();
+  paintUndo();
+}
+
+// Puts rows back the way they were before the last action. A row that the action created is
+// removed the way that tab allows: tasks are soft-deleted, picks dismissed, a day's values cleared.
+function undoLast() {
+  const entry = undo.pop();
+  if (!entry) return toast('Nothing to undo');
+  for (const it of entry.items.slice().reverse()) {
+    const now = current(it.tab, it.key);
+    let rec;
+    if (it.before) rec = it.before;
+    else if (!now) continue;
+    else if (it.tab === 'tasks' || it.tab === 'cigs') rec = { ...now, deletedAt: nowIso() };
+    else if (it.tab === 'picks') rec = { ...now, status: 'dismissed' };
+    else if (it.tab === 'settings') rec = { ...now, value: '' };
+    else if (it.tab === 'days') rec = { date: now.date, gymType: now.gymType || '' };
+    else continue;
+    const { _row, ...clean } = rec;
+    store.enqueue(it.tab, it.tab === 'cigs' ? clean : { ...clean, updatedAt: nowIso(), updatedBy: 'app' });
+  }
+  scheduleSync();
+  ui.logSaved = '';
+  render();
+  toast(`Undone: ${entry.label}`);
+}
+
+function paintUndo() {
+  const b = $('#undo');
+  if (!b) return;
+  const last = undo.last;
+  b.disabled = !last;
+  b.title = last ? `Undo: ${last.label} (Ctrl+Z)` : 'Nothing to undo';
 }
 
 const liveTasks = () => store.rows('tasks').filter((t) => !t.deletedAt);
@@ -122,11 +195,30 @@ function urgency(t) {
   return 4;
 }
 
-const sortTasks = (list) => list.slice().sort((a, b) =>
-  urgency(a) - urgency(b) ||
-  (IMP_RANK[a.importance] ?? 4) - (IMP_RANK[b.importance] ?? 4) ||
-  (a.deadline || '9999').localeCompare(b.deadline || '9999') ||
-  (a.createdAt || '').localeCompare(b.createdAt || ''));
+const byDeadline = (a, b) => (a.deadline || '9999').localeCompare(b.deadline || '9999');
+const byCreated = (a, b) => (a.createdAt || '').localeCompare(b.createdAt || '');
+const SORTS = {
+  // Overdue, due today, MUST DO, next three days, then the rest.
+  urgency: (a, b) => urgency(a) - urgency(b) || impRank(a) - impRank(b) || byDeadline(a, b) || byCreated(a, b),
+  // MUST DO, High, Medium, Low, waiting for Claude, none; then the closest deadline.
+  importance: (a, b) => impRank(a) - impRank(b) || byDeadline(a, b) || byCreated(a, b),
+  // Closest deadline first, no deadline last; then importance.
+  deadline: (a, b) => byDeadline(a, b) || impRank(a) - impRank(b) || byCreated(a, b),
+};
+const SORT_LABELS = [['urgency', 'Urgent'], ['importance', 'Importance'], ['deadline', 'Deadline']];
+const sortTasks = (list, by = prefs.sort) => list.slice().sort(SORTS[by] || SORTS.urgency);
+
+function sortControl() {
+  return `<div class="sortby" role="group" aria-label="Sort tasks"><span>Sort</span>${SORT_LABELS.map(([k, l]) =>
+    `<button type="button" data-act="sort" data-sort="${k}" aria-pressed="${prefs.sort === k}">${l}</button>`).join('')}</div>`;
+}
+
+// Tags used before, most used first, so they can be picked instead of typed.
+function knownTags() {
+  const count = new Map();
+  for (const t of liveTasks()) for (const g of t.tags || []) count.set(g, (count.get(g) || 0) + 1);
+  return [...count.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([g]) => g);
+}
 
 function dueChip(s) {
   const n = daysTo(s);
@@ -136,52 +228,172 @@ function dueChip(s) {
   return `<span class="due ${cls}">${label}</span>`;
 }
 
+const SPARKLE = '<svg class="spark" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5l1.4 4.1L13.5 7 9.4 8.4 8 12.5 6.6 8.4 2.5 7l4.1-1.4z"/><path d="M13 11.2l.5 1.3 1.3.5-1.3.5-.5 1.3-.5-1.3-1.3-.5 1.3-.5z"/></svg>';
+
 function taskRow(t) {
   const done = t.status === 'done';
   const must = !done && t.importance === 'MUST DO' && !t.claudeDecides;
   const overdue = !done && urgency(t) === 0;
-  const imp = t.claudeDecides ? 'claude decides' : (t.importance || '');
   const tags = (t.tags || []).map((x) => `<span class="tag">#${esc(x)}</span>`).join('');
+  const imp = t.claudeDecides
+    ? `<span class="imp pending" title="Waiting for Claude to decide">${SPARKLE}Claude decides</span>`
+    : `<span class="imp">${esc(t.importance || '')}</span>`;
   return `<li class="task${done ? ' done' : ''}${must ? ' must' : ''}${overdue ? ' overdue' : ''}">
     <input type="checkbox" data-done="${esc(t.id)}"${done ? ' checked' : ''} aria-label="Done: ${esc(t.title)}">
     <div><div class="ttl">${esc(t.title)}</div>
-      <div class="tm">${done ? '' : dueChip(t.deadline)}${tags}${t.claudeDecides ? '<span class="tag claude">claude decides</span>' : ''}</div></div>
-    <span class="imp">${esc(imp)}</span>
+      <div class="tm">${done ? '' : dueChip(t.deadline)}${tags}</div></div>
+    ${imp}
     <button class="x" type="button" data-del="${esc(t.id)}" aria-label="Delete task">×</button>
   </li>`;
 }
 
-function quickForm() {
-  return `<form class="quick" data-form="quick" autocomplete="off">
-    <input name="title" placeholder="New task…" required aria-label="New task">
-    <input name="deadline" type="date" aria-label="Deadline">
-    <select name="importance" aria-label="Importance">${IMP.map((i) => `<option${i === 'Medium' ? ' selected' : ''}>${i}</option>`).join('')}</select>
-    <input name="tags" placeholder="#tags" aria-label="Tags">
-    <button type="submit">Add</button>
+const CAL_ICON = '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="4.5" width="14" height="12" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M3 8.5h14M7 2.8v3.4M13 2.8v3.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
+
+// Deadline: type it day first ("24.11", "fri", "tomorrow"), tap a quick pick, or open a calendar.
+// The hidden input holds the date the form submits.
+function dateField(name = 'deadline', label = 'Deadline') {
+  return `<div class="datef" data-datef>
+    <span class="lbl">${label}</span>
+    <div class="date-in">
+      <input class="date-text" data-date-text placeholder="dd.mm, fri, tomorrow" autocomplete="off" spellcheck="false" aria-label="${label}: day, month, year">
+      <button type="button" class="cal" data-act="date-cal" aria-label="Pick from a calendar">${CAL_ICON}</button>
+      <input class="date-native" type="date" data-date-native tabindex="-1" aria-hidden="true" min="2000-01-01" max="2100-12-31">
+    </div>
+    <input type="hidden" name="${name}" value="">
+    <div class="date-chips">${quickDates(today()).map(([l, k]) =>
+      `<button type="button" data-act="date-set" data-key="${k}" title="${longDate(k)}">${l}</button>`).join('')}</div>
+    <span class="date-hint" aria-live="polite"></span>
+  </div>`;
+}
+
+function setDate(field, key, { fromText = false, error = '' } = {}) {
+  field.querySelector('input[type=hidden]').value = key;
+  if (!fromText) field.querySelector('[data-date-text]').value = typed(key);
+  const hint = field.querySelector('.date-hint');
+  hint.textContent = error || longDate(key);
+  hint.classList.toggle('bad', !!error);
+  field.querySelectorAll('[data-act=date-set]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.key === key)));
+}
+
+function importanceSelect() {
+  return `<label class="impf"><span class="lbl">Importance</span><select name="importance">${IMP.map((i) =>
+    `<option${i === 'Medium' ? ' selected' : ''}>${i}</option>`).join('')}<option value="${CLAUDE}">✨ Let Claude decide</option></select></label>`;
+}
+
+// Tags: tap one you used before, or type a new one (Enter or comma adds it).
+function tagField() {
+  const known = knownTags();
+  return `<div class="tagf" data-tagf>
+    <span class="lbl">Tags</span>
+    <div class="tag-pick">${known.map((g, i) =>
+      `<button type="button" class="tchip${i >= 12 ? ' extra' : ''}" data-act="tag-toggle" data-tag="${esc(g)}" aria-pressed="false">#${esc(g)}</button>`).join('')}
+      <input class="tag-new" data-tag-new placeholder="${known.length ? 'new tag' : 'add a tag, e.g. study'}" autocomplete="off" spellcheck="false" aria-label="New tag">
+    </div>
+    <input type="hidden" name="tags" value="">
+  </div>`;
+}
+
+function syncTags(field) {
+  const on = [...field.querySelectorAll('.tchip[aria-pressed=true]')].map((b) => b.dataset.tag);
+  field.querySelector('input[name=tags]').value = on.join(', ');
+}
+
+// Adds what is typed in the new-tag box as a selected chip, or selects the matching existing one.
+function commitTag(field) {
+  const box = field.querySelector('[data-tag-new]');
+  for (const tag of parseTags(box.value)) {
+    let chip = [...field.querySelectorAll('.tchip')].find((b) => b.dataset.tag === tag);
+    if (!chip) {
+      chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'tchip';
+      chip.dataset.act = 'tag-toggle';
+      chip.dataset.tag = tag;
+      chip.textContent = `#${tag}`;
+      box.before(chip);
+    }
+    chip.setAttribute('aria-pressed', 'true');
+  }
+  box.value = '';
+  filterTags(field, '');
+  syncTags(field);
+}
+
+function filterTags(field, text) {
+  const q = parseTags(text)[0] || '';
+  field.classList.toggle('filtering', !!q);
+  field.querySelectorAll('.tchip').forEach((b) => {
+    b.hidden = !!q && !b.dataset.tag.includes(q) && b.getAttribute('aria-pressed') !== 'true';
+  });
+}
+
+// open: the extra fields always show (Tasks page). On Home they show once you start a task.
+function quickForm({ open = false } = {}) {
+  return `<form class="quick${open ? ' open always' : ''}" data-form="quick" autocomplete="off">
+    <div class="q-main">
+      <input name="title" placeholder="New task…" required aria-label="New task" maxlength="300">
+      <button type="submit" class="q-add">Add</button>
+    </div>
+    <div class="q-more">
+      ${dateField()}
+      ${importanceSelect()}
+      ${tagField()}
+    </div>
   </form>`;
+}
+
+// Reads the deadline from a form, or explains why it can't. Returns null when the typed date is unreadable.
+function formDeadline(form) {
+  const field = form.querySelector('[data-datef]');
+  if (!field) return '';
+  const text = field.querySelector('[data-date-text]').value;
+  const r = parseDateInput(text, today());
+  if (r.error) {
+    setDate(field, '', { fromText: true, error: r.error });
+    field.querySelector('[data-date-text]').focus();
+    toast("Couldn't read that date");
+    return null;
+  }
+  return r.key;
+}
+
+function formImportance(form) {
+  const v = String(new FormData(form).get('importance') || '');
+  if (v === CLAUDE) return { importance: '', claudeDecides: true };
+  return { importance: IMP.includes(v) ? v : 'Medium', claudeDecides: false };
+}
+
+function formTags(form) {
+  const field = form.querySelector('[data-tagf]');
+  if (!field) return [];
+  commitTag(field);
+  return parseTags(field.querySelector('input[name=tags]').value);
 }
 
 function addTask(form) {
   const f = new FormData(form);
   const title = String(f.get('title') || '').trim();
   if (!title) return;
-  const importance = IMP.includes(f.get('importance')) ? String(f.get('importance')) : 'Medium';
+  const deadline = formDeadline(form);
+  if (deadline === null) return;
   write('tasks', {
     id: newId(),
     title: title.slice(0, 300),
     description: '',
-    tags: parseTags(f.get('tags')),
-    importance,
-    deadline: isDateKey(f.get('deadline')) ? String(f.get('deadline')) : '',
+    tags: formTags(form),
+    ...formImportance(form),
+    deadline,
     status: 'open',
-    claudeDecides: false,
     sourcePick: '',
     createdAt: nowIso(),
     doneAt: '',
     deletedAt: '',
-  });
-  render();
-  document.querySelector('form.quick input[name=title]')?.focus();
+  }, 'Added task');
+  const keepOpen = form.classList.contains('always');
+  render({ keepDrafts: false });
+  toast(`Added “${title.slice(0, 40)}”`, { undo: true });
+  const box = document.querySelector('form.quick input[name=title]');
+  if (box && keepOpen) box.focus();
 }
 
 function viewTasks() {
@@ -190,20 +402,25 @@ function viewTasks() {
   const tags = [...new Set(open.flatMap((t) => t.tags || []))].sort();
   const filt = ui.taskTag;
   const list = sortTasks(open.filter((t) =>
-    filt === 'all' ? true : filt === 'urgent' ? urgency(t) <= 1 : (t.tags || []).includes(filt)));
+    filt === 'all' ? true : filt === 'urgent' ? urgency(t) <= 1 : filt === '~claude' ? t.claudeDecides : (t.tags || []).includes(filt)));
+  const waiting = open.filter((t) => t.claudeDecides).length;
   const done = all
     .filter((t) => t.status === 'done')
     .sort((a, b) => ms(b.doneAt || b.updatedAt) - ms(a.doneAt || a.updatedAt))
     .slice(0, 40);
-  const chips = ['all', 'urgent', ...tags];
+  const chips = ['all', 'urgent', ...(waiting ? ['~claude'] : []), ...tags];
+  const chipLabel = (f) => (f === 'all' ? 'All' : f === 'urgent' ? 'Urgent' : f === '~claude' ? `✨ For Claude (${waiting})` : `#${esc(f)}`);
   return `
   <div class="tasks-page">
     <header class="page-head"><h1>Tasks</h1><span class="muted">${open.length} open</span></header>
     <section class="card">
-      ${quickForm()}
+      ${quickForm({ open: true })}
     </section>
-    <div class="filters" style="margin:18px 0 10px">${chips.map((f) =>
-      `<button type="button" data-act="task-filter" data-tag="${esc(f)}" aria-pressed="${filt === f}">${f === 'all' ? 'All' : f === 'urgent' ? 'Urgent' : '#' + esc(f)}</button>`).join('')}</div>
+    <div class="list-bar">
+      <div class="filters">${chips.map((f) =>
+        `<button type="button" data-act="task-filter" data-tag="${esc(f)}" aria-pressed="${filt === f}">${chipLabel(f)}</button>`).join('')}</div>
+      ${sortControl()}
+    </div>
     <section class="card" style="padding:6px 20px">
       <ul class="tasks">${list.map(taskRow).join('') || '<li class="empty">Nothing here.</li>'}</ul>
     </section>
@@ -216,22 +433,30 @@ function viewTasks() {
 
 /* ---------- home ---------- */
 
+// Total minutes of a set of time ranges, as typed for work: "9-12:30 13:30-18".
+const rangesTotal = (text) => parseSleep(text).reduce((s, b) => s + b.dur, 0);
+
 function logCard() {
   const r = dayMap().get(today()) || {};
   const radios = (name, cur) => [1, 2, 3, 4, 5].map((n) =>
     `<label><input type="radio" name="${name}" value="${n}"${cur === n ? ' checked' : ''}><span>${n}</span></label>`).join('');
-  const gym = r.gymType || 'none';
+  const sl = sleepSummary(r.sleep);
+  const wk = rangesTotal(r.work);
+  const mins = (name, label, v) => `<label><span class="lh">${label}</span><input name="${name}" type="number" min="0" max="1440" inputmode="numeric" placeholder="min" value="${v ?? ''}"></label>`;
   return `<form class="card log" id="log" autocomplete="off">
     <div class="card-head"><h2>Today</h2><span class="muted small" id="log-state">${esc(ui.logSaved)}</span></div>
+    <label><span class="lh">Sleep <b class="tot" id="sleep-tot">${sl ? fmtDur(sl.total) : ''}</b></span><input name="sleep" value="${esc(r.sleep)}" placeholder="23:30-7:15 +15-16" spellcheck="false"></label>
+    <div class="scale"><span>Sleep quality</span><div class="dots">${radios('sleepQuality', r.sleepQuality)}</div></div>
+    <label><span class="lh">Work <b class="tot" id="work-tot">${wk ? fmtDur(wk) : ''}</b></span><input name="work" value="${esc(r.work)}" placeholder="9-12:30 13:30-18" spellcheck="false"></label>
     <div class="grid2">
-      <label>Sleep<input name="sleep" value="${esc(r.sleep)}" placeholder="23:30-7:15"></label>
-      <label>Walk, min<input name="walkingMin" type="number" min="0" inputmode="numeric" value="${r.walkingMin ?? ''}"></label>
-      <label>Gym<select name="gymType">${GYM_TYPES.map((t) => `<option${gym === t ? ' selected' : ''}>${t}</option>`).join('')}</select></label>
-      <label>Gym, min<input name="gymMin" type="number" min="0" inputmode="numeric" value="${r.gymMin ?? ''}"></label>
+      ${mins('studyMin', 'Study, min', r.studyMin)}
+      ${mins('choresMin', 'Chores, min', r.choresMin)}
+      ${mins('walkingMin', 'Walk, min', r.walkingMin)}
+      ${mins('gymMin', 'Gym, min', r.gymMin)}
     </div>
     <div class="scale"><span>Energy</span><div class="dots">${radios('energy', r.energy)}</div></div>
     <div class="scale"><span>Mood</span><div class="dots">${radios('mood', r.mood)}</div></div>
-    <label>Note<input name="note" value="${esc(r.note)}" placeholder="alcohol, anything"></label>
+    <label class="note"><span class="lh">Note</span><textarea name="note" rows="3" placeholder="Anything. Enter starts a new line.">${esc(r.note)}</textarea></label>
   </form>`;
 }
 
@@ -239,24 +464,43 @@ function onLog(form) {
   const f = new FormData(form);
   const key = today();
   const prev = dayMap().get(key) || {};
-  const gymType = GYM_TYPES.includes(f.get('gymType')) ? String(f.get('gymType')) : 'none';
   const sleepIn = String(f.get('sleep') || '').trim();
-  const sleepOk = validSleep(sleepIn);
+  const workIn = String(f.get('work') || '').trim();
+  const sleepOk = validRanges(sleepIn);
+  const workOk = validRanges(workIn);
+  const mins = (name) => wholeNum(f.get(name), 0, 1440);
   write('days', {
     ...prev,
     date: key,
     sleep: sleepOk ? sleepIn : (prev.sleep || ''),
-    walkingMin: wholeNum(f.get('walkingMin'), 0, 1440),
-    gymType,
-    gymMin: gymType === 'none' ? null : wholeNum(f.get('gymMin'), 0, 1440),
+    sleepQuality: wholeNum(f.get('sleepQuality'), 1, 5),
+    work: workOk ? workIn : (prev.work || ''),
+    studyMin: mins('studyMin'),
+    choresMin: mins('choresMin'),
+    walkingMin: mins('walkingMin'),
+    gymType: prev.gymType || '',
+    gymMin: mins('gymMin'),
     energy: wholeNum(f.get('energy'), 1, 5),
     mood: wholeNum(f.get('mood'), 1, 5),
-    note: String(f.get('note') || '').trim(),
-  });
-  ui.logSaved = sleepOk ? `saved ${clockAt(new Date())}` : 'sleep: use 23:30-7:15 +15-16';
+    note: String(f.get('note') || '').replace(/\s+$/, ''),
+  }, 'Edited Today');
+  ui.logSaved = !sleepOk ? 'sleep: use 23:30-7:15 +15-16' : !workOk ? 'work: use 9-12:30 14-18' : `saved ${clockAt(new Date())}`;
   const st = document.getElementById('log-state');
   if (st) st.textContent = ui.logSaved;
-  renderPartial('week', weekInner);
+  const sl = sleepOk ? sleepSummary(sleepIn) : null;
+  const wk = workOk ? rangesTotal(workIn) : 0;
+  const s = document.getElementById('sleep-tot');
+  if (s) s.textContent = sl ? fmtDur(sl.total) : '';
+  const w = document.getElementById('work-tot');
+  if (w) w.textContent = wk ? fmtDur(wk) : '';
+}
+
+// Reserved space on Home: a sentence or a small picture, to be decided.
+function spotCard() {
+  return `<section class="card spot" id="spot" aria-label="Reserved space">
+    <p>A sentence or a small picture goes here.</p>
+    <span class="muted small">placeholder · to decide later</span>
+  </section>`;
 }
 
 function cigInner() {
@@ -313,15 +557,9 @@ function viewHome() {
     </dl>
   </header>
   <div class="home">
-    <section class="card focus">
-      <div class="card-head"><h2>Focus</h2><a class="link" href="#tasks">all tasks →</a></div>
-      <ul class="tasks">${sorted.slice(0, 8).map(taskRow).join('') || '<li class="empty">Nothing open.</li>'}</ul>
-      ${sorted.length > 8 ? `<a class="more" href="#tasks">+${sorted.length - 8} more</a>` : ''}
-      ${quickForm()}
-    </section>
     <div class="side">
       ${logCard()}
-      <section class="card cig" id="cigs">${cigInner()}</section>
+      ${SHOW_CIGS ? `<section class="card cig" id="cigs">${cigInner()}</section>` : ''}
       <section class="card picks-card">
         <div class="card-head"><h2>Picks</h2><a class="link" href="#picks">open →</a></div>
         <ol class="mini-picks">${picks.map((p) => {
@@ -331,17 +569,21 @@ function viewHome() {
             : `<span class="ttl">${esc(p.title)}</span>`}</li>`;
         }).join('') || '<li class="muted">No current picks.</li>'}</ol>
       </section>
-      <section class="card" id="week">${weekInner()}</section>
+      ${spotCard()}
     </div>
+    <section class="card focus">
+      <div class="card-head"><h2>Tasks</h2>${sortControl()}<a class="link" href="#tasks">all →</a></div>
+      <ul class="tasks">${sorted.slice(0, 12).map(taskRow).join('') || '<li class="empty">Nothing open.</li>'}</ul>
+      ${sorted.length > 12 ? `<a class="more" href="#tasks">+${sorted.length - 12} more</a>` : ''}
+      ${quickForm()}
+    </section>
   </div>`;
 }
 
 /* ---------- picks ---------- */
 
-const pickTaskForm = (p) => `<form class="inline" data-pick="${esc(p.id)}">
-    <label>Deadline<input type="date" name="deadline"></label>
-    <label>Importance<select name="importance">${IMP.map((i) => `<option${i === 'Medium' ? ' selected' : ''}>${i}</option>`).join('')}</select></label>
-    <label class="check"><input type="checkbox" name="auto"> Claude decides both</label>
+const pickTaskForm = (p) => `<form class="inline quick open always" data-pick="${esc(p.id)}" autocomplete="off">
+    <div class="q-more">${dateField()}${importanceSelect()}</div>
     <button class="primary" type="submit">Create task</button>
   </form>`;
 
@@ -370,27 +612,28 @@ function pickRow(p) {
 function taskFromPick(form, id) {
   const p = livePicks().find((x) => x.id === id);
   if (!p) return;
-  const f = new FormData(form);
-  // One flag covers both fields: "Claude decides both" clears deadline and importance.
-  const auto = f.get('auto') === 'on';
-  write('tasks', {
-    id: newId(),
-    title: p.title.slice(0, 300),
-    description: p.why || '',
-    tags: p.kind ? [p.kind] : [],
-    importance: auto ? '' : (IMP.includes(f.get('importance')) ? String(f.get('importance')) : 'Medium'),
-    deadline: !auto && isDateKey(f.get('deadline')) ? String(f.get('deadline')) : '',
-    status: 'open',
-    claudeDecides: auto,
-    sourcePick: p.id,
-    createdAt: nowIso(),
-    doneAt: '',
-    deletedAt: '',
+  const deadline = formDeadline(form);
+  if (deadline === null) return;
+  undo.group('Task from pick', () => {
+    write('tasks', {
+      id: newId(),
+      title: p.title.slice(0, 300),
+      description: p.why || '',
+      tags: p.kind ? [p.kind] : [],
+      ...formImportance(form),
+      deadline,
+      status: 'open',
+      sourcePick: p.id,
+      createdAt: nowIso(),
+      doneAt: '',
+      deletedAt: '',
+    });
+    write('picks', { ...p, status: 'tasked' });
   });
-  write('picks', { ...p, status: 'tasked' });
+  paintUndo();
   ui.openPick = null;
-  toast('Task added');
   render();
+  toast('Task added', { undo: true });
 }
 
 function viewPicks() {
@@ -422,7 +665,7 @@ function importPicks(form) {
   const items = Array.isArray(data) ? data : (data && (data.feed || data.picks)) || [];
   if (!Array.isArray(items) || !items.length) return toast('No picks found');
   let count = 0;
-  for (const raw of items) {
+  undo.group('Imported picks', () => { for (const raw of items) {
     if (!raw || !raw.title) continue;
     // "active" was the prototype's word for new.
     let status = raw.status === 'active' || !raw.status ? 'new' : raw.status === 'saved' ? 'useful' : raw.status;
@@ -443,8 +686,9 @@ function importPicks(form) {
       createdAt: raw.createdAt || nowIso(),
     });
     count += 1;
-  }
-  toast(count ? `${count} picks imported` : 'No picks found');
+  } });
+  paintUndo();
+  toast(count ? `${count} picks imported` : 'No picks found', { undo: count > 0 });
   render();
 }
 
@@ -474,7 +718,9 @@ function viewTrends() {
   const series = [
     { n: 'Energy', u: '/5', v: rec.map((r) => r?.energy ?? null), max: 5, c: 'var(--clay)', dec: 1, lowerBetter: false },
     { n: 'Walking', u: ' min', v: rec.map((r) => r?.walkingMin ?? null), max: null, c: 'var(--sage)', dec: 0, lowerBetter: false },
-    { n: 'Cigarettes', u: '/day', v: cigs, max: null, c: 'var(--ink)', dec: 1, lowerBetter: true },
+    SHOW_CIGS
+      ? { n: 'Cigarettes', u: '/day', v: cigs, max: null, c: 'var(--ink)', dec: 1, lowerBetter: true }
+      : { n: 'Study', u: ' h', v: rec.map((r) => (typeof r?.studyMin === 'number' ? +(r.studyMin / 60).toFixed(1) : null)), max: null, c: 'var(--ink)', dec: 1, lowerBetter: false },
     { n: 'Sleep', u: ' h', v: sleepH, max: 10, c: 'var(--gold)', dec: 1, lowerBetter: false },
   ];
   const cards = series.map((s) => {
@@ -550,6 +796,14 @@ function viewSettings() {
           <button class="ghost" type="button" data-act="forget-link">Remove link from this device</button>
         </div>
       </form>
+      <section class="card appearance" style="display:grid;gap:14px">
+        <h2>Appearance</h2>
+        <div class="pref-row"><span class="lbl">Mode</span><div class="seg-tabs">${THEMES.map(([v, l]) =>
+          `<button type="button" data-act="theme" data-v="${v}" aria-pressed="${prefs.theme === v}">${l}</button>`).join('')}</div></div>
+        <div class="pref-row"><span class="lbl">Color</span><div class="swatches">${ACCENTS.map(([v, l]) =>
+          `<button type="button" class="sw sw-${v}" data-act="accent" data-v="${v}" aria-pressed="${prefs.accent === v}" title="${l}"><span></span>${l}</button>`).join('')}</div></div>
+        <p class="muted small" style="margin:0">Saved on this device only.</p>
+      </section>
       <form class="card" id="profile-form" style="display:grid;gap:14px">
         <h2>What Claude looks for</h2>
         <p class="muted small" style="margin:0">Stored in the sheet's settings tab. Last weekly run: ${esc(store.setting('last_run_at', 'never'))}</p>
@@ -673,14 +927,16 @@ function saveConnection(form) {
 function saveProfile(form) {
   const f = new FormData(form);
   let changed = 0;
-  for (const key of PROFILE_KEYS) {
-    const value = String(f.get(key) || '').trim();
-    if (value === store.setting(key)) continue;
-    store.enqueue('settings', { key, value, updatedAt: nowIso() });
-    changed += 1;
-  }
-  if (changed) scheduleSync();
-  toast(changed ? 'Saved' : 'Nothing changed');
+  undo.group('Saved what Claude looks for', () => {
+    for (const key of PROFILE_KEYS) {
+      const value = String(f.get(key) || '').trim();
+      if (value === store.setting(key)) continue;
+      write('settings', { key, value });
+      changed += 1;
+    }
+  });
+  paintUndo();
+  toast(changed ? 'Saved' : 'Nothing changed', { undo: changed > 0 });
 }
 
 // Removes the link and key from this device only. Data and queued changes stay here.
@@ -714,14 +970,55 @@ function currentRoute() {
   return VIEWS[h] ? h : 'home';
 }
 
-// Background syncs must not wipe a half-typed form, so they wait until focus leaves the view.
+// Background syncs must not wipe a half-typed form, so they wait until focus leaves the view,
+// and while a new task has a title typed in.
+const hasDraft = () => [...document.querySelectorAll('#view form.quick input[name=title]')].some((i) => i.value.trim());
 const editingInView = () => {
   const a = document.activeElement;
-  return !!a && !!a.closest?.('#view') && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName);
+  const inForm = !!a && !!a.closest?.('#view') && (/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) || !!a.closest('form'));
+  return inForm || hasDraft();
 };
 let deferredRender = false;
 
-function render() {
+// A new task's fields survive a re-render of the same page (sort change, filter, sync).
+function saveDrafts() {
+  return [...document.querySelectorAll('#view form.quick[data-form=quick]')].map((f) => ({
+    open: f.classList.contains('open'),
+    title: f.querySelector('input[name=title]')?.value || '',
+    date: f.querySelector('[data-date-text]')?.value || '',
+    imp: f.querySelector('select[name=importance]')?.value || '',
+    tags: [...f.querySelectorAll('.tchip[aria-pressed=true]')].map((b) => b.dataset.tag),
+    newTag: f.querySelector('[data-tag-new]')?.value || '',
+  }));
+}
+
+function restoreDrafts(drafts) {
+  document.querySelectorAll('#view form.quick[data-form=quick]').forEach((f, i) => {
+    const d = drafts[i];
+    if (!d || !(d.title || d.date || d.tags.length || d.newTag)) return;
+    if (d.open) f.classList.add('open');
+    f.querySelector('input[name=title]').value = d.title;
+    const field = f.querySelector('[data-datef]');
+    if (field && d.date) {
+      field.querySelector('[data-date-text]').value = d.date;
+      const r = parseDateInput(d.date, today());
+      setDate(field, r.key, { fromText: true, error: r.error });
+    }
+    if (d.imp) f.querySelector('select[name=importance]').value = d.imp;
+    const tf = f.querySelector('[data-tagf]');
+    if (tf) {
+      tf.querySelector('[data-tag-new]').value = d.newTag;
+      if (d.tags.length) {
+        tf.querySelector('[data-tag-new]').value = d.tags.join(', ');
+        commitTag(tf);
+        tf.querySelector('[data-tag-new]').value = d.newTag;
+      }
+    }
+  });
+}
+
+let lastRoute = '';
+function render({ keepDrafts = true } = {}) {
   const r = currentRoute();
   document.body.dataset.route = r;
   document.querySelectorAll('[data-route]').forEach((a) => {
@@ -730,8 +1027,12 @@ function render() {
     else a.removeAttribute('aria-current');
   });
   deferredRender = false;
+  const drafts = keepDrafts && r === lastRoute ? saveDrafts() : [];
+  lastRoute = r;
   $('#view').innerHTML = VIEWS[r]();
+  restoreDrafts(drafts);
   paintSync();
+  paintUndo();
 }
 
 function renderSoft() {
@@ -756,12 +1057,34 @@ document.addEventListener('click', (e) => {
   const del = e.target.closest('[data-del]');
   if (del) {
     const t = store.rows('tasks').find((x) => x.id === del.dataset.del);
-    if (t) write('tasks', { ...t, deletedAt: nowIso() });
-    return render();
+    if (!t) return;
+    write('tasks', { ...t, deletedAt: nowIso() }, 'Deleted task');
+    render();
+    return toast(`Deleted “${t.title.slice(0, 40)}”`, { undo: true });
   }
   const el = e.target.closest('[data-act]');
   if (!el) return;
   const { act, id } = el.dataset;
+  if (act === 'undo') return undoLast();
+  if (act === 'sort') { prefs.sort = el.dataset.sort; savePrefs(); return render(); }
+  if (act === 'theme' || act === 'accent') {
+    prefs[act] = el.dataset.v;
+    savePrefs();
+    applyLook();
+    return render();
+  }
+  if (act === 'date-set') return setDate(el.closest('[data-datef]'), el.dataset.key);
+  if (act === 'date-cal') {
+    const field = el.closest('[data-datef]');
+    const native = field.querySelector('[data-date-native]');
+    native.value = field.querySelector('input[type=hidden]').value || today();
+    try { native.showPicker(); } catch { native.focus(); native.click(); }
+    return;
+  }
+  if (act === 'tag-toggle') {
+    el.setAttribute('aria-pressed', String(el.getAttribute('aria-pressed') !== 'true'));
+    return syncTags(el.closest('[data-tagf]'));
+  }
   if (act === 'cig-add') {
     const at = nowIso();
     store.enqueue('cigs', { id: newId(), at, day: logicalDay(new Date(at)), deletedAt: '' });
@@ -781,14 +1104,15 @@ document.addEventListener('click', (e) => {
   if (act === 'pick-save') {
     const p = livePicks().find((x) => x.id === id);
     if (!p || p.status === 'tasked') return;
-    write('picks', { ...p, status: isSaved(p) ? 'new' : 'useful' });
+    write('picks', { ...p, status: isSaved(p) ? 'new' : 'useful' }, isSaved(p) ? 'Unsaved pick' : 'Saved pick');
     return render();
   }
   if (act === 'pick-dismiss') {
     const p = livePicks().find((x) => x.id === id);
     if (!p) return;
-    write('picks', { ...p, status: 'dismissed' });
-    return render();
+    write('picks', { ...p, status: 'dismissed' }, 'Dismissed pick');
+    render();
+    return toast('Pick dismissed', { undo: true });
   }
   if (act === 'pick-task') { ui.openPick = ui.openPick === id ? null : id; return render(); }
   if (act === 'sync-now') return runSync();
@@ -798,11 +1122,16 @@ document.addEventListener('click', (e) => {
 
 document.addEventListener('change', (e) => {
   const t = e.target;
+  if (t.matches?.('[data-date-native]')) {
+    if (t.value) setDate(t.closest('[data-datef]'), t.value);
+    return;
+  }
   if (t.dataset && t.dataset.done) {
     const task = store.rows('tasks').find((x) => x.id === t.dataset.done);
     if (task) {
-      write('tasks', { ...task, status: t.checked ? 'done' : 'open', doneAt: t.checked ? nowIso() : '' });
+      write('tasks', { ...task, status: t.checked ? 'done' : 'open', doneAt: t.checked ? nowIso() : '' }, t.checked ? 'Completed task' : 'Reopened task');
       render();
+      if (t.checked) toast(`Done: “${task.title.slice(0, 40)}”`, { undo: true });
     }
     return;
   }
@@ -810,7 +1139,41 @@ document.addEventListener('change', (e) => {
 });
 
 document.addEventListener('input', (e) => {
-  if (e.target.form && e.target.form.id === 'log') onLog(e.target.form);
+  const t = e.target;
+  if (t.matches?.('[data-date-text]')) {
+    const r = parseDateInput(t.value, today());
+    return setDate(t.closest('[data-datef]'), r.key, { fromText: true, error: r.error });
+  }
+  if (t.matches?.('[data-tag-new]')) {
+    const field = t.closest('[data-tagf]');
+    if (/[,;]/.test(t.value)) return commitTag(field);
+    return filterTags(field, t.value);
+  }
+  if (t.name === 'title' && t.form?.matches('form.quick')) t.form.classList.add('open');
+  if (t.form && t.form.id === 'log') onLog(t.form);
+});
+
+// On Home the date, importance and tag fields appear once you start a task.
+document.addEventListener('focusin', (e) => {
+  const f = e.target.closest?.('form.quick');
+  if (f && e.target.name === 'title') f.classList.add('open');
+});
+
+document.addEventListener('keydown', (e) => {
+  const t = e.target;
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable;
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'z' && !typing) {
+    e.preventDefault();
+    return undoLast();
+  }
+  if (t.matches?.('[data-tag-new]') && e.key === 'Enter' && t.value.trim()) {
+    e.preventDefault();
+    return commitTag(t.closest('[data-tagf]'));
+  }
+  if (e.key === 'Escape' && t.closest?.('form.quick:not(.always)') && !hasDraft()) {
+    t.closest('form.quick').classList.remove('open');
+    t.blur();
+  }
 });
 
 document.addEventListener('submit', (e) => {
@@ -825,7 +1188,7 @@ document.addEventListener('submit', (e) => {
 
 function boot() {
   paintSync();
-  // Reconnect silently when the browser still has a Google session. Otherwise the user presses Connect.
+  paintUndo();
   if (connected()) runSync();
   window.addEventListener('online', () => runSync());
   window.addEventListener('offline', () => paintSync());

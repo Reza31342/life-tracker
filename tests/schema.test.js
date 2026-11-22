@@ -26,13 +26,21 @@ test('a claude-decides task keeps the flag as a boolean and the importance blank
 });
 
 test('empty numbers stay blank, they are not written as zero', () => {
-  const row = toRow('days', { date: '2026-11-17', walkingMin: null, gymMin: undefined, energy: 4 });
-  assert.equal(row[2], '');
-  assert.equal(row[4], '');
-  assert.equal(row[5], 4);
-  const back = fromRow('days', ['2026-11-17', '23:30-7:15', '', 'none', '', 4, '', '', '', ''], 2);
+  const col = (name) => TABS.days.cols.findIndex((c) => c[0] === name);
+  const row = toRow('days', { date: '2026-11-17', walkingMin: null, gymMin: undefined, energy: 4, studyMin: 0 });
+  assert.equal(row[col('walking_min')], '');
+  assert.equal(row[col('gym_min')], '');
+  assert.equal(row[col('sleep_quality')], '');
+  assert.equal(row[col('energy')], 4);
+  assert.equal(row[col('study_min')], 0, 'zero is kept as zero');
+  const raw = Array(TABS.days.cols.length).fill('');
+  raw[col('date')] = '2026-11-17';
+  raw[col('energy')] = 4;
+  raw[col('work')] = '9-12:30 14-18';
+  const back = fromRow('days', raw, 2);
   assert.equal(back.walkingMin, null);
   assert.equal(back.energy, 4);
+  assert.equal(back.work, '9-12:30 14-18');
 });
 
 test('a renamed or moved column stops the sync instead of writing to the wrong place', () => {

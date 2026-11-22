@@ -68,6 +68,10 @@ export function fromV1(v1, now = new Date().toISOString()) {
     ops.push(['days', {
       date,
       sleep: String(d.sleep || ''),
+      sleepQuality: null,
+      work: '',
+      studyMin: null,
+      choresMin: null,
       walkingMin: num(d.walkingMin),
       gymType,
       gymMin: gymType === 'none' ? null : num(d.gymMin),
