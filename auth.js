@@ -65,6 +65,11 @@ function ensureClient(clientId) {
       settle(true, token);
     },
     error_callback: (err) => {
+      // Chrome blocks the sign-in window when the app asks without a click (for example on reload).
+      if (err?.type === 'popup_failed_to_open') {
+        settle(false, new AuthError("Chrome blocked Google's sign-in window.", 'popup_blocked'));
+        return;
+      }
       settle(false, new AuthError(err?.message || 'Sign-in was closed or blocked by the browser', err?.type || 'popup'));
     },
   });

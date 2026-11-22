@@ -568,11 +568,14 @@ function viewSettings() {
   </div>`;
 }
 
+const POPUP_BLOCKED_MESSAGE = "Chrome blocked Google's sign-in window. Allow pop-ups for this site (icon at the right of the address bar), then tap Sync now.";
+
 function friendlyError(err) {
   if (err instanceof SchemaError) return err.message;
   if (err instanceof AuthError) {
     if (err.code === 'no_client_id') return 'Add your Google client ID in Settings';
     if (err.code === 'no_script') return err.message;
+    if (err.code === 'popup_blocked') return POPUP_BLOCKED_MESSAGE;
     if (err.code === 'popup' || err.code === 'access_denied') {
       return 'Sign-in was cancelled or blocked. Press "Save and connect" to try again.';
     }
@@ -594,13 +597,16 @@ let syncing = false;
 let syncQueued = false;
 let syncTimer = null;
 let connectionLost = false;
+// Set when Chrome blocked the sign-in window. Automatic syncs then wait for a tap (Sync now or
+// Save and connect), so the browser isn't asked again and again. Memory only: a reload tries once.
+let popupBlocked = false;
 
 function scheduleSync(delay = 1500) {
   clearTimeout(syncTimer);
   syncTimer = setTimeout(() => runSync(), delay);
 }
 
-async function runSync() {
+async function runSync({ manual = false } = {}) {
   const d = store.data.device;
   if (!d.clientId || !d.sheetId) return paintSync();
   if (syncing) {
@@ -608,6 +614,7 @@ async function runSync() {
     return;
   }
   if (!navigator.onLine || !hasGrant()) return paintSync();
+  if (popupBlocked && !manual) return paintSync();
   syncing = true;
   paintSync();
   try {
@@ -615,12 +622,14 @@ async function runSync() {
     d.lastSyncAt = nowIso();
     d.lastError = '';
     connectionLost = false;
+    popupBlocked = false;
     if (result.superseded) {
       toast(`${result.superseded} older edit${result.superseded > 1 ? 's were' : ' was'} replaced by newer changes`);
     }
   } catch (err) {
     // No connection is not an error to show: the edits are safe in the outbox and sync retries.
     connectionLost = err instanceof SheetsError && err.status === 0;
+    popupBlocked = err instanceof AuthError && err.code === 'popup_blocked';
     d.lastError = connectionLost ? '' : friendlyError(err);
     console.warn('Sync failed', err);
   } finally {
@@ -646,15 +655,17 @@ async function connect() {
     await getToken({ clientId: d.clientId, interactive: true });
     const title = await sheetTitle(d.sheetId, tokenFor(d.clientId));
     d.lastError = '';
+    popupBlocked = false;
     store.save();
     toast(`Connected to "${title}"`);
   } catch (err) {
+    popupBlocked = err instanceof AuthError && err.code === 'popup_blocked';
     d.lastError = friendlyError(err);
     store.save();
     paintSync();
     return;
   }
-  await runSync();
+  await runSync({ manual: true });
   render();
 }
 
@@ -784,7 +795,7 @@ document.addEventListener('click', (e) => {
     return render();
   }
   if (act === 'pick-task') { ui.openPick = ui.openPick === id ? null : id; return render(); }
-  if (act === 'sync-now') return runSync();
+  if (act === 'sync-now') return runSync({ manual: true });
   if (act === 'sign-out') return disconnectGoogle();
   if (act === 'export') return exportBackup();
 });
