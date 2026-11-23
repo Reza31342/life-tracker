@@ -9,8 +9,6 @@ import { typed, longDate, weekdayOf } from './dates.js';
 import { parseRanges, rangesTotal, parseDuration, fmtHM } from './time.js';
 import { UndoHistory } from './undo.js';
 
-// Cigarettes are hidden while Reza quits. The code, the cigs tab and its data stay in place.
-const SHOW_CIGS = false;
 
 const store = new Store(localStorage);
 const undo = new UndoHistory();
@@ -140,6 +138,10 @@ const liveTasks = () => store.rows('tasks').filter((t) => !t.deletedAt);
 const livePicks = () => store.rows('picks');
 const dayMap = () => new Map(store.rows('days').map((d) => [d.date, d]));
 const liveCigs = () => store.rows('cigs').filter((c) => !c.deletedAt);
+// The cigarette counter on Home is off unless the sheet's settings tab says show_cigarettes = on.
+// Off hides it only; the cigs tab and its data stay as they are.
+const CIGS_KEY = 'show_cigarettes';
+const cigsOnHome = () => /^(on|true|yes|1)$/i.test(store.setting(CIGS_KEY, 'off').trim());
 const cigsOn = (key) => liveCigs().filter((c) => c.day === key).sort((a, b) => ms(a.at) - ms(b.at));
 const lastDays = (n) => Array.from({ length: n }, (_, i) => shiftDay(today(), i - (n - 1)));
 
@@ -496,7 +498,7 @@ function logCard() {
   const key = logDay();
   const isToday = key === today();
   const r = dayMap().get(key) || {};
-  const radios = (name, cur) => [1, 2, 3, 4, 5].map((n) =>
+  const radios = (name, cur, max = 5) => Array.from({ length: max }, (_, i) => i + 1).map((n) =>
     `<label><input type="radio" name="${name}" value="${n}"${cur === n ? ' checked' : ''}><span>${n}</span></label>`).join('');
   const dur = ([name, label]) => `<div class="trow dur">
       <label for="f-${name}">${label}</label>
@@ -526,7 +528,7 @@ function logCard() {
     <section class="sec">
       <div class="sec-h"><h3>Feeling</h3></div>
       <div class="scale"><span>Energy</span><div class="dots">${radios('energy', r.energy)}</div></div>
-      <div class="scale"><span>Mood</span><div class="dots">${radios('mood', r.mood)}</div></div>
+      <div class="scale ten"><span>Mood</span><div class="dots ten">${radios('mood', r.mood, 10)}</div></div>
     </section>
     <section class="sec note">
       <div class="sec-h"><h3>Note</h3></div>
@@ -563,7 +565,7 @@ function onLog(form, field = '') {
     ...durations,
     gymType: prev.gymType || '',
     energy: wholeNum(f.get('energy'), 1, 5),
-    mood: wholeNum(f.get('mood'), 1, 5),
+    mood: wholeNum(f.get('mood'), 1, 10),
     note: String(f.get('note') || '').replace(/\s+$/, ''),
   }, `${key === today() ? 'Edited Today' : `Edited ${dayTitle(key)}`}${FIELD_NAMES[field] ? ` (${FIELD_NAMES[field]})` : ''}`);
   ui.logSaved = unreadable ? 'times: use h:mm, e.g. 2:45' : `saved ${clockAt(new Date())}`;
@@ -640,9 +642,9 @@ function viewHome() {
     <h1>Good ${part}<em>.</em></h1>
   </header>
   <div class="home">
-    <div class="side">
+    <div class="side${cigsOnHome() ? ' with-cigs' : ''}">
       ${logCard()}
-      ${SHOW_CIGS ? `<section class="card cig" id="cigs">${cigInner()}</section>` : ''}
+      ${cigsOnHome() ? `<section class="card cig" id="cigs">${cigInner()}</section>` : ''}
       ${spotCard()}
       <section class="card picks-card">
         <div class="card-head"><h2>Picks</h2><a class="link" href="#picks">open →</a></div>
@@ -863,14 +865,11 @@ function viewTrends() {
   const days = lastDays(14);
   const dm = dayMap();
   const rec = days.map((k) => dm.get(k) || null);
-  const cigs = days.map((k) => cigsOn(k).length);
   const sleepH = days.map((k) => { const s = sleepSummary(dm.get(k)?.sleep); return s ? +(s.total / 60).toFixed(1) : null; });
   const series = [
     { n: 'Energy', u: '/5', v: rec.map((r) => r?.energy ?? null), max: 5, c: 'var(--clay)', dec: 1, lowerBetter: false },
     { n: 'Walking', u: ' min', v: rec.map((r) => r?.walkingMin ?? null), max: null, c: 'var(--sage)', dec: 0, lowerBetter: false },
-    SHOW_CIGS
-      ? { n: 'Cigarettes', u: '/day', v: cigs, max: null, c: 'var(--ink)', dec: 1, lowerBetter: true }
-      : { n: 'Study', u: ' h', v: rec.map((r) => (typeof r?.studyMin === 'number' ? +(r.studyMin / 60).toFixed(1) : null)), max: null, c: 'var(--ink)', dec: 1, lowerBetter: false },
+    { n: 'Study', u: ' h', v: rec.map((r) => (typeof r?.studyMin === 'number' ? +(r.studyMin / 60).toFixed(1) : null)), max: null, c: 'var(--ink)', dec: 1, lowerBetter: false },
     { n: 'Sleep', u: ' h', v: sleepH, max: 10, c: 'var(--gold)', dec: 1, lowerBetter: false },
   ];
   const cards = series.map((s) => {
@@ -954,6 +953,12 @@ function viewSettings() {
         <div class="pref-row"><span class="lbl">Color</span><div class="swatches">${ACCENTS.map(([v, l]) =>
           `<button type="button" class="sw sw-${v}" data-act="accent" data-v="${v}" aria-pressed="${prefs.accent === v}" title="${l}"><span></span>${l}</button>`).join('')}</div></div>
         <p class="muted small" style="margin:0">Saved on this device only.</p>
+      </section>
+      <section class="card home-prefs" style="display:grid;gap:14px">
+        <h2>Home</h2>
+        <div class="pref-row"><span class="lbl wide">Cigarette counter</span><div class="seg-tabs">${[['off', 'Off'], ['on', 'On']].map(([v, l]) =>
+          `<button type="button" data-act="cigs-home" data-v="${v}" aria-pressed="${(cigsOnHome() ? 'on' : 'off') === v}">${l}</button>`).join('')}</div></div>
+        <p class="muted small" style="margin:0">Saved in the sheet, so it's the same on all your devices. Off only hides the counter; past counts stay in the sheet.</p>
       </section>
       <form class="card" id="profile-form" style="display:grid;gap:14px">
         <h2>What Claude looks for</h2>
@@ -1217,6 +1222,13 @@ document.addEventListener('click', (e) => {
   const { act, id } = el.dataset;
   if (act === 'undo') return undoLast();
   if (act === 'sort') { prefs.sort = el.dataset.sort; savePrefs(); return render(); }
+  if (act === 'cigs-home') {
+    const on = el.dataset.v === 'on';
+    if (on === cigsOnHome()) return;
+    write('settings', { key: CIGS_KEY, value: on ? 'on' : 'off' }, on ? 'Showed cigarettes on Home' : 'Hid cigarettes from Home');
+    render();
+    return toast(on ? 'Cigarette counter is on Home' : 'Cigarette counter hidden', { undo: true });
+  }
   if (act === 'theme' || act === 'accent') {
     prefs[act] = el.dataset.v;
     savePrefs();

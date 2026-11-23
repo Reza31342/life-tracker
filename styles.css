@@ -191,6 +191,10 @@ main{max-width:1180px;margin:0 auto;padding:28px 28px 80px}
 .dots span{display:grid;place-items:center;width:32px;height:32px;border-radius:50%;border:1px solid var(--line);color:var(--ink);font-family:Fraunces,serif;font-size:15px;cursor:pointer;text-transform:none;letter-spacing:0}
 .dots input:checked + span{background:var(--strong);color:var(--on-strong);border-color:var(--strong)}
 .dots input:focus-visible + span{outline:2px solid var(--clay);outline-offset:2px}
+/* 1–10 scale: the ten dots get their own full-width row under the label */
+.scale.ten{flex-wrap:wrap;row-gap:8px}
+.dots.ten{flex-basis:100%;display:grid;grid-template-columns:repeat(10,minmax(0,1fr));gap:4px}
+.dots.ten span{width:100%;height:auto;aspect-ratio:1;max-width:32px;font-size:13px;margin:0 auto}
 
 /* cigarettes */
 .cig-row{display:flex;align-items:center;gap:14px}
@@ -281,6 +285,7 @@ main{max-width:1180px;margin:0 auto;padding:28px 28px 80px}
 /* appearance */
 .pref-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
 .pref-row .lbl{width:52px}
+.pref-row .lbl.wide{width:auto}
 .swatches{display:flex;flex-wrap:wrap;gap:8px}
 .sw{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);background:transparent;border-radius:999px;padding:4px 12px 4px 5px;cursor:pointer;font-size:13px;color:var(--ink)}
 .sw span{width:18px;height:18px;border-radius:50%;background:var(--swc)}
@@ -314,6 +319,8 @@ html[data-theme=dark] .sw-ink{--swc:#EEE6D8}
   .log .note textarea{flex:1;resize:none}
   .picks-card{grid-area:picks;display:flex;flex-direction:column}
   #spot{grid-area:spot;min-height:110px}
+  .side.with-cigs{grid-template-rows:auto auto minmax(0,1fr);grid-template-areas:"log spot" "log cigs" "log picks"}
+  .side .cig{grid-area:cigs}
   .mini-picks{overflow:auto;flex:1;min-height:0}
 }
 
