@@ -57,3 +57,14 @@ test('the saved version is a copy, so later edits do not change it', () => {
   rec.tags.push('y');
   assert.deepEqual(u.last.items[0].before.tags, ['x']);
 });
+
+test('after seal, the next edit of the same row starts a new undo step', () => {
+  let now = 0;
+  const u = new UndoHistory({ mergeMs: 5000, now: () => now });
+  u.record('Edited Yesterday (study)', 'days', 'd', { studyMin: null });
+  u.seal();
+  now = 1000;
+  u.record('Edited Yesterday (study)', 'days', 'd', { studyMin: 150 });
+  assert.equal(u.size, 2);
+  assert.deepEqual(u.last.items[0].before, { studyMin: 150 });
+});

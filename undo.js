@@ -36,12 +36,17 @@ export class UndoHistory {
     }
     const top = this.last;
     const t = this.now();
-    if (top && top.label === label && top.items.length === 1 && top.items[0].tab === tab
+    if (top && !top.sealed && top.label === label && top.items.length === 1 && top.items[0].tab === tab
       && top.items[0].key === key && t - top.at <= this.mergeMs) {
       top.at = t;
       return;
     }
     this.push({ label, items: [item], at: t });
+  }
+
+  // Ends merging into the last step, e.g. when the user moves to another day.
+  seal() {
+    if (this.last) this.last.sealed = true;
   }
 
   push(entry) {

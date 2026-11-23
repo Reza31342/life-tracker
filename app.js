@@ -14,7 +14,8 @@ const SHOW_CIGS = false;
 
 const store = new Store(localStorage);
 const undo = new UndoHistory();
-const ui = { pickTab: 'current', pickKind: 'paper', openPick: null, taskTag: 'all', logSaved: '' };
+// logDay: the day shown in the Today card ('' = today, follows the date when it changes).
+const ui = { pickTab: 'current', pickKind: 'paper', openPick: null, taskTag: 'all', logSaved: '', logDay: '' };
 
 // Look and task sort order: per device, not synced.
 const PREFS_KEY = 'life-tracker.prefs';
@@ -481,8 +482,20 @@ function rangeTotalHtml(text, opts) {
   return `${blocks.length ? fmtDur(tot) : ''}${bad ? `<span class="warn" title="Part of this isn't a from-to time. It's saved as typed; Claude can tidy it later.">?</span>` : ''}`;
 }
 
+// The day the Today card shows and edits. Never later than today.
+const logDay = () => (ui.logDay && ui.logDay < today() ? ui.logDay : today());
+
+function dayTitle(key) {
+  const t = today();
+  if (key === t) return 'Today';
+  if (key === shiftDay(t, -1)) return 'Yesterday';
+  return `${WD_SHORT[weekdayOf(key)]} ${Number(key.slice(8, 10))}.${Number(key.slice(5, 7))}.${key.slice(0, 4) === t.slice(0, 4) ? '' : key.slice(0, 4)}`;
+}
+
 function logCard() {
-  const r = dayMap().get(today()) || {};
+  const key = logDay();
+  const isToday = key === today();
+  const r = dayMap().get(key) || {};
   const radios = (name, cur) => [1, 2, 3, 4, 5].map((n) =>
     `<label><input type="radio" name="${name}" value="${n}"${cur === n ? ' checked' : ''}><span>${n}</span></label>`).join('');
   const dur = ([name, label]) => `<div class="trow dur">
@@ -491,8 +504,15 @@ function logCard() {
       <button type="button" class="step" data-act="dur-add" data-name="${name}" data-add="15" aria-label="Add 15 minutes to ${label}">+15m</button>
       <button type="button" class="step" data-act="dur-add" data-name="${name}" data-add="60" aria-label="Add one hour to ${label}">+1h</button>
     </div>`;
-  return `<form class="card log" id="log" autocomplete="off">
-    <div class="card-head"><h2>Today</h2><span class="muted small" id="log-state">${esc(ui.logSaved)}</span></div>
+  return `<form class="card log${isToday ? '' : ' past'}" id="log" autocomplete="off" data-day="${key}">
+    <div class="card-head">
+      <div class="day-nav">
+        <button type="button" class="dn" data-act="day-prev" aria-label="Previous day">‹</button>
+        <h2 title="${longDate(key)}">${dayTitle(key)}</h2>
+        <button type="button" class="dn" data-act="day-next" aria-label="Next day"${isToday ? ' disabled' : ''}>›</button>
+      </div>
+      <span class="log-side">${isToday ? '' : '<button type="button" class="to-today" data-act="day-today">Back to today</button>'}<span class="muted small" id="log-state">${esc(ui.logSaved)}</span></span>
+    </div>
     <section class="sec">
       <div class="sec-h"><h3>Sleep</h3><span class="tot" id="sleep-tot">${rangeTotalHtml(r.sleep)}</span></div>
       <input name="sleep" value="${esc(r.sleep)}" placeholder="23:30-7:15, 14-15" spellcheck="false" aria-label="Sleep, from-to">
@@ -517,9 +537,13 @@ function logCard() {
 
 // Saves the whole day on every change. Sleep and work are saved exactly as typed; a duration
 // that can't be read keeps its last value until it can.
-function onLog(form) {
+const FIELD_NAMES = { sleep: 'sleep', sleepQuality: 'sleep quality', work: 'work', studyMin: 'study', choresMin: 'chores', walkingMin: 'walk', gymMin: 'gym', energy: 'energy', mood: 'mood', note: 'note' };
+
+// field: the input that changed. Typing in one field merges into one undo step; another field
+// or another day starts a new step.
+function onLog(form, field = '') {
   const f = new FormData(form);
-  const key = today();
+  const key = isDateKey(form.dataset.day) ? form.dataset.day : logDay();
   const prev = dayMap().get(key) || {};
   const sleep = String(f.get('sleep') || '').trim();
   const work = String(f.get('work') || '').trim();
@@ -541,7 +565,7 @@ function onLog(form) {
     energy: wholeNum(f.get('energy'), 1, 5),
     mood: wholeNum(f.get('mood'), 1, 5),
     note: String(f.get('note') || '').replace(/\s+$/, ''),
-  }, 'Edited Today');
+  }, `${key === today() ? 'Edited Today' : `Edited ${dayTitle(key)}`}${FIELD_NAMES[field] ? ` (${FIELD_NAMES[field]})` : ''}`);
   ui.logSaved = unreadable ? 'times: use h:mm, e.g. 2:45' : `saved ${clockAt(new Date())}`;
   const st = document.getElementById('log-state');
   if (st) st.textContent = ui.logSaved;
@@ -1207,12 +1231,21 @@ document.addEventListener('click', (e) => {
     if (act === 'cal-day') return setDate(field, el.dataset.key);
     if (act === 'cal-clear') return setDate(field, '');
   }
+  if (act === 'day-prev' || act === 'day-next' || act === 'day-today') {
+    const next = act === 'day-today' ? '' : shiftDay(logDay(), act === 'day-prev' ? -1 : 1);
+    ui.logDay = next && next < today() ? next : '';
+    ui.logSaved = '';
+    undo.seal();
+    const card = $('#log');
+    if (card) card.outerHTML = logCard();
+    return;
+  }
   if (act === 'dur-add') {
     const form = el.closest('form');
     const box = form.querySelector(`[name=${el.dataset.name}]`);
     const cur = parseDuration(box.value).min || 0;
     box.value = fmtHM(Math.min(1440, cur + Number(el.dataset.add)));
-    return onLog(form);
+    return onLog(form, el.dataset.name);
   }
   if (act === 'edit-task') return openEdit(id);
   if (act === 'edit-close') return closeEdit();
@@ -1272,7 +1305,7 @@ document.addEventListener('change', (e) => {
     }
     return;
   }
-  if (t.form && t.form.id === 'log') onLog(t.form);
+  if (t.form && t.form.id === 'log') onLog(t.form, t.name);
 });
 
 document.addEventListener('input', (e) => {
@@ -1283,7 +1316,7 @@ document.addEventListener('input', (e) => {
     return filterTags(field, t.value);
   }
   if (t.name === 'title' && t.form?.matches('form.quick')) t.form.classList.add('open');
-  if (t.form && t.form.id === 'log') onLog(t.form);
+  if (t.form && t.form.id === 'log') onLog(t.form, t.name);
 });
 
 // On Home the date, importance and tag fields appear once you start a task.
