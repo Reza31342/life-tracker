@@ -585,20 +585,38 @@ function spotCard() {
   </section>`;
 }
 
+// The counter follows the day chosen in the Today card. A cigarette added later for a past day
+// keeps the moment it was entered in `at`, so it has no real clock time: it is counted for that
+// day but shown as "added later" and left out of the first-of-day time.
+const addedLater = (c) => logicalDay(new Date(c.at)) > c.day;
+
 function cigInner() {
-  const todays = cigsOn(today());
-  const sl = sleepSummary(dayMap().get(today())?.sleep);
-  const first = todays[0];
+  const key = logDay();
+  const isToday = key === today();
+  const list = cigsOn(key);
+  const timed = list.filter((c) => !addedLater(c));
+  const later = list.length - timed.length;
+  const sl = sleepSummary(dayMap().get(key)?.sleep);
+  const first = timed[0];
   let wake = '';
   if (first && sl) wake = ` · ${fmtDur((minutesAt(first.at) - sl.main.end + 1440) % 1440)} after waking`;
-  const times = todays.slice(-6).map((c) => `<span>${clockAt(c.at)}</span>`).join('') || '<span>none yet</span>';
-  return `<div class="card-head"><h2>Cigarettes</h2><span class="big-n">${todays.length}</span></div>
+  const chips = timed.slice(-6).map((c) => `<span>${clockAt(c.at)}</span>`);
+  if (later) chips.push(`<span>${later} added later</span>`);
+  const times = chips.join('') || `<span>${isToday ? 'none yet' : 'none'}</span>`;
+  const day = isToday ? '' : ` · <span class="cig-day">${esc(dayTitle(key))}</span>`;
+  return `<div class="card-head"><h2>Cigarettes${day}</h2><span class="big-n">${list.length}</span></div>
     <div class="cig-row">
-      <button class="tap" type="button" data-act="cig-add" aria-label="Log one cigarette">+1</button>
+      <button class="tap" type="button" data-act="cig-add" aria-label="Log one cigarette${isToday ? '' : ` for ${esc(dayTitle(key))}`}">+1</button>
       <div class="times">${times}</div>
-      <button class="ghost" type="button" data-act="cig-undo"${todays.length ? '' : ' disabled'}>undo</button>
+      <button class="ghost" type="button" data-act="cig-undo"${list.length ? '' : ' disabled'}>undo</button>
     </div>
     <p class="muted small" style="margin:12px 0 0">${first ? `first at ${clockAt(first.at)}${wake}` : 'first at —'} · week ${weekStats().cigsPerDay}/day</p>`;
+}
+
+const cigCard = () => `<section class="card cig${logDay() === today() ? '' : ' past'}" id="cigs">${cigInner()}</section>`;
+function paintCigs() {
+  const el = document.getElementById('cigs');
+  if (el) el.outerHTML = cigCard();
 }
 
 function weekInner() {
@@ -644,7 +662,7 @@ function viewHome() {
   <div class="home">
     <div class="side${cigsOnHome() ? ' with-cigs' : ''}">
       ${logCard()}
-      ${cigsOnHome() ? `<section class="card cig" id="cigs">${cigInner()}</section>` : ''}
+      ${cigsOnHome() ? cigCard() : ''}
       ${spotCard()}
       <section class="card picks-card">
         <div class="card-head"><h2>Picks</h2><a class="link" href="#picks">open →</a></div>
@@ -1196,11 +1214,6 @@ function renderSoft() {
   render();
 }
 
-function renderPartial(id, fn) {
-  const el = document.getElementById(id);
-  if (el) el.innerHTML = fn();
-}
-
 document.addEventListener('focusout', () => {
   if (!deferredRender) return;
   setTimeout(() => { if (!editingInView()) render(); }, 60);
@@ -1250,6 +1263,7 @@ document.addEventListener('click', (e) => {
     undo.seal();
     const card = $('#log');
     if (card) card.outerHTML = logCard();
+    paintCigs();
     return;
   }
   if (act === 'dur-add') {
@@ -1267,17 +1281,17 @@ document.addEventListener('click', (e) => {
     return syncTags(el.closest('[data-tagf]'));
   }
   if (act === 'cig-add') {
-    const at = nowIso();
-    store.enqueue('cigs', { id: newId(), at, day: logicalDay(new Date(at)), deletedAt: '' });
+    // day: the day shown in the Today card (today, or a past day being filled in)
+    store.enqueue('cigs', { id: newId(), at: nowIso(), day: logDay(), deletedAt: '' });
     scheduleSync();
-    return renderPartial('cigs', cigInner);
+    return paintCigs();
   }
   if (act === 'cig-undo') {
-    const last = cigsOn(today()).pop();
+    const last = cigsOn(logDay()).pop();
     if (!last) return;
     store.enqueue('cigs', { ...last, deletedAt: nowIso() });
     scheduleSync();
-    return renderPartial('cigs', cigInner);
+    return paintCigs();
   }
   if (act === 'task-filter') { ui.taskTag = el.dataset.tag; return render(); }
   if (act === 'pick-tab') { ui.pickTab = el.dataset.tab; return render(); }
