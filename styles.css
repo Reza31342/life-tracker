@@ -282,9 +282,10 @@ main{max-width:1180px;margin:0 auto;padding:28px 28px 80px}
 .spot{border-style:dashed;background:transparent;box-shadow:none;display:grid;gap:4px;align-content:center;justify-items:center;text-align:center}
 .spot p{margin:0;font-family:Fraunces,serif;font-style:italic;font-size:16px;color:var(--muted)}
 /* Home card filled from the sheet: a small picture beside the sentence */
-.home-note{display:grid;grid-template-columns:auto minmax(0,1fr);gap:14px;align-items:center;padding:14px}
-.home-note img{display:block;width:96px;height:64px;object-fit:cover;border-radius:10px}
+.home-note{display:grid;grid-template-columns:auto minmax(0,1fr);gap:12px;align-items:center;padding:12px 14px}
+.home-note img{display:block;width:72px;height:48px;object-fit:cover;border-radius:8px}
 .home-note p{margin:0;font-family:Fraunces,serif;font-style:italic;font-size:15px;line-height:1.35;white-space:pre-line;overflow-wrap:anywhere;text-wrap:pretty}
+.home-note p.fit{white-space:pre;overflow-wrap:normal}
 .home-note.img-only{grid-template-columns:minmax(0,1fr)}
 .home-note.img-only img{width:100%}
 .home-note.text-only{grid-template-columns:minmax(0,1fr);padding:22px 20px;text-align:center}
@@ -326,7 +327,8 @@ html[data-theme=dark] .sw-ink{--swc:#EEE6D8}
   .log .note{flex:1;display:flex;flex-direction:column;min-height:120px}
   .log .note textarea{flex:1;resize:none}
   .picks-card{grid-area:picks;display:flex;flex-direction:column}
-  #spot{grid-area:spot;min-height:110px}
+  #spot{grid-area:spot}
+  #spot.spot{min-height:110px}
   .side.with-cigs{grid-template-rows:auto auto minmax(0,1fr);grid-template-areas:"log spot" "log cigs" "log picks"}
   .side .cig{grid-area:cigs}
   .mini-picks{overflow:auto;flex:1;min-height:0}

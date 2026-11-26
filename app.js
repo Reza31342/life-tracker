@@ -1224,6 +1224,29 @@ function render({ keepDrafts = true } = {}) {
   paintSync();
   paintUndo();
   paintCounts();
+  fitHomeNote();
+}
+
+// Keeps the Home card's sentence on the lines it was written in: the font shrinks (down to 11px)
+// until the longest line fits beside the picture. Only a line too long even then wraps.
+function fitHomeNote() {
+  const p = document.querySelector('.home-note:not(.text-only) p');
+  if (!p) return;
+  p.style.fontSize = '';
+  p.classList.add('fit');
+  let size = parseFloat(getComputedStyle(p).fontSize);
+  while (p.scrollWidth > p.clientWidth + 0.5 && size > 11) {
+    size -= 0.5;
+    p.style.fontSize = `${size}px`;
+  }
+  if (p.scrollWidth > p.clientWidth + 0.5) p.classList.remove('fit');
+}
+let fitFrame = 0;
+const refit = () => { cancelAnimationFrame(fitFrame); fitFrame = requestAnimationFrame(fitHomeNote); };
+window.addEventListener('resize', refit);
+if (document.fonts) {
+  document.fonts.ready.then(refit);
+  document.fonts.addEventListener?.('loadingdone', refit);
 }
 
 function renderSoft() {
