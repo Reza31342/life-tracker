@@ -578,10 +578,28 @@ function onLog(form, field = '') {
 }
 
 // Reserved space on Home: a sentence or a small picture, to be decided.
+// The Home card shows a sentence and/or a small picture from the sheet's settings tab
+// (home_sentence, home_image), so each person's own sheet decides what it says. The picture is
+// a small data:image/…;base64 value kept in the cell itself (private, it travels with the sheet),
+// or an https:// link. Anything else is ignored.
+const HOME_IMG = /^(data:image\/(png|jpe?g|webp|gif);base64,[A-Za-z0-9+/]+=*|https:\/\/[^\s"'<>]+)$/i;
+const homeImage = () => {
+  const v = store.setting('home_image').replace(/\s+/g, '');
+  return HOME_IMG.test(v) ? v : '';
+};
+
 function spotCard() {
-  return `<section class="card spot" id="spot" aria-label="Reserved space">
+  const text = store.setting('home_sentence').trim();
+  const img = homeImage();
+  if (!text && !img) {
+    return `<section class="card spot" id="spot" aria-label="Home card">
     <p>A sentence or a small picture goes here.</p>
-    <span class="muted small">placeholder · to decide later</span>
+    <span class="muted small">set home_sentence and home_image in the sheet's settings tab</span>
+  </section>`;
+  }
+  return `<section class="card home-note${img ? '' : ' text-only'}" id="spot">
+    ${img ? `<img src="${esc(img)}" alt="" decoding="async">` : ''}
+    ${text ? `<p>${esc(text)}</p>` : ''}
   </section>`;
 }
 
@@ -977,6 +995,7 @@ function viewSettings() {
         <div class="pref-row"><span class="lbl wide">Cigarette counter</span><div class="seg-tabs">${[['off', 'Off'], ['on', 'On']].map(([v, l]) =>
           `<button type="button" data-act="cigs-home" data-v="${v}" aria-pressed="${(cigsOnHome() ? 'on' : 'off') === v}">${l}</button>`).join('')}</div></div>
         <p class="muted small" style="margin:0">Saved in the sheet, so it's the same on all your devices. Off only hides the counter; past counts stay in the sheet.</p>
+        <p class="muted small" style="margin:0">The sentence and picture on Home come from the sheet's settings tab (home_sentence, home_image). Ask Claude to change them.</p>
       </section>
       <form class="card" id="profile-form" style="display:grid;gap:14px">
         <h2>What Claude looks for</h2>
