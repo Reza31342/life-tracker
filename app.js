@@ -599,9 +599,32 @@ function spotCard() {
   }
   const kind = img && text ? '' : img ? ' img-only' : ' text-only';
   return `<section class="card home-note${kind}" id="spot">
-    ${img ? `<img src="${esc(img)}" alt="" decoding="async">` : ''}
+    ${img ? `<button type="button" class="home-pic" data-act="photo-open" aria-label="Open the picture"><img src="${esc(img)}" alt="" decoding="async"></button>` : ''}
     ${text ? `<p>${esc(text)}</p>` : ''}
   </section>`;
+}
+
+// The Home card's picture, large, in a pop-up. Closes with ×, Esc, or a tap outside the picture.
+function openPhoto() {
+  const img = homeImage();
+  if (!img) return;
+  let dlg = $('#photo');
+  if (!dlg) {
+    dlg = document.createElement('dialog');
+    dlg.id = 'photo';
+    dlg.className = 'photo-dialog';
+    dlg.setAttribute('aria-label', 'Picture');
+    document.body.append(dlg);
+  }
+  const text = store.setting('home_sentence').trim();
+  dlg.innerHTML = `<button type="button" class="photo-x" data-act="photo-close" aria-label="Close">×</button>
+    <img src="${esc(img)}" alt="">
+    ${text ? `<p>${esc(text)}</p>` : ''}`;
+  dlg.showModal();
+}
+function closePhoto() {
+  const dlg = $('#photo');
+  if (dlg?.open) dlg.close();
 }
 
 // The counter follows the day chosen in the Today card. A cigarette added later for a past day
@@ -1265,6 +1288,7 @@ document.addEventListener('focusout', () => {
 document.addEventListener('click', (e) => {
   if (!e.target.closest('.cal-pop') && !e.target.closest('[data-act=cal-toggle]')) closeAllCals();
   if (e.target.id === 'edit') return closeEdit(); // a click on the dimmed backdrop
+  if (e.target.id === 'photo') return closePhoto();
   const del = e.target.closest('[data-del]');
   if (del) {
     const t = store.rows('tasks').find((x) => x.id === del.dataset.del);
@@ -1278,6 +1302,8 @@ document.addEventListener('click', (e) => {
   const { act, id } = el.dataset;
   if (act === 'undo') return undoLast();
   if (act === 'sort') { prefs.sort = el.dataset.sort; savePrefs(); return render(); }
+  if (act === 'photo-open') return openPhoto();
+  if (act === 'photo-close') return closePhoto();
   if (act === 'cigs-home') {
     const on = el.dataset.v === 'on';
     if (on === cigsOnHome()) return;

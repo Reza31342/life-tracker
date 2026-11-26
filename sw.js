@@ -1,5 +1,5 @@
 // Offline shell cache. Requests to the sheet script are cross-origin and never cached here.
-const CACHE = 'life-tracker-v14';
+const CACHE = 'life-tracker-v15';
 const ASSETS = [
   './', './index.html', './styles.css', './manifest.webmanifest', './icon.svg',
   './app.js', './store.js', './schema.js', './bridge.js', './sync.js', './dates.js', './undo.js', './time.js',
