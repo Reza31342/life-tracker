@@ -597,7 +597,8 @@ function spotCard() {
     <span class="muted small">set home_sentence and home_image in the sheet's settings tab</span>
   </section>`;
   }
-  return `<section class="card home-note${img ? '' : ' text-only'}" id="spot">
+  const kind = img && text ? '' : img ? ' img-only' : ' text-only';
+  return `<section class="card home-note${kind}" id="spot">
     ${img ? `<img src="${esc(img)}" alt="" decoding="async">` : ''}
     ${text ? `<p>${esc(text)}</p>` : ''}
   </section>`;
