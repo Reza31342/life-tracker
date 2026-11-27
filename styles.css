@@ -317,6 +317,28 @@ html[data-theme=dark] .sw-ink{--swc:#EEE6D8}
 .toast.show{opacity:1;transform:translate(-50%,0)}
 
 .tasks-page{max-width:880px;margin:0 auto}
+.tasks-page.by-tag{max-width:1240px}
+.head-side{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+/* By tag: one tinted box per tag; the tint comes from --tint, set per tag */
+.tag-boxes{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px;align-items:start}
+.tag-box{--tint:var(--muted);container-type:inline-size;padding:14px 16px 8px;background:color-mix(in srgb,var(--tint) 7%,var(--card));border-top:3px solid color-mix(in srgb,var(--tint) 60%,var(--card))}
+.tag-box.untagged{border-top-style:dashed}
+.tb-head{display:flex;align-items:center;gap:8px;padding-bottom:6px}
+.tb-head h3{margin:0;font-family:Fraunces,serif;font-weight:500;font-size:19px;color:color-mix(in srgb,var(--tint) 65%,var(--ink));overflow-wrap:anywhere}
+.tag-box.untagged .tb-head h3{color:var(--muted)}
+.tb-n{font-size:12px;color:var(--muted);background:color-mix(in srgb,var(--tint) 14%,transparent);border-radius:999px;padding:1px 8px}
+.tb-add{margin-left:auto;width:28px;height:28px;border-radius:50%;border:1px solid color-mix(in srgb,var(--tint) 45%,var(--line));background:var(--card);color:var(--ink);font-size:18px;line-height:1;cursor:pointer;flex:none}
+.tb-add:hover{background:color-mix(in srgb,var(--tint) 18%,var(--card))}
+.tag-box .task{padding-left:12px}
+@container (max-width:440px){
+  .tag-box .task{grid-template-columns:18px minmax(0,1fr) 18px 18px;grid-template-areas:"cb body ed x" "cb imp ed x";row-gap:4px}
+  .tag-box .task > input[type=checkbox]{grid-area:cb}
+  .tag-box .task > div{grid-area:body}
+  .tag-box .task > .imp{grid-area:imp;justify-self:start}
+  .tag-box .task > .imp:empty{display:none}
+  .tag-box .task > .ed{grid-area:ed}
+  .tag-box .task > .x{grid-area:x}
+}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .trends .card{min-width:0}
 

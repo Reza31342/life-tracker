@@ -18,7 +18,8 @@ const ui = { pickTab: 'current', pickKind: 'paper', openPick: null, taskTag: 'al
 // Look and task sort order: per device, not synced.
 const PREFS_KEY = 'life-tracker.prefs';
 const prefs = (() => {
-  try { return { theme: 'light', accent: 'ink', sort: 'urgency', ...JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') }; } catch { return { theme: 'light', accent: 'ink', sort: 'urgency' }; }
+  const base = { theme: 'light', accent: 'ink', sort: 'urgency', taskLayout: 'list' };
+  try { return { ...base, ...JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') }; } catch { return base; }
 })();
 const savePrefs = () => { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch { /* storage full */ } };
 const THEMES = [['light', 'Light'], ['dark', 'Dark'], ['system', 'System']];
@@ -223,11 +224,12 @@ function dueChip(s) {
 const PENCIL = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M13.6 3.6a1.8 1.8 0 0 1 2.6 2.6L7.4 15 4 16l1-3.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M12.2 5l2.8 2.8" stroke="currentColor" stroke-width="1.5"/></svg>';
 const SPARKLE = '<svg class="spark" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5l1.4 4.1L13.5 7 9.4 8.4 8 12.5 6.6 8.4 2.5 7l4.1-1.4z"/><path d="M13 11.2l.5 1.3 1.3.5-1.3.5-.5 1.3-.5-1.3-1.3-.5 1.3-.5z"/></svg>';
 
-function taskRow(t) {
+function taskRow(t, opts) {
   const done = t.status === 'done';
   const must = !done && t.importance === 'MUST DO' && !t.claudeDecides;
   const overdue = !done && urgency(t) === 0;
-  const tags = (t.tags || []).map((x) => `<span class="tag">#${esc(x)}</span>`).join('');
+  const hide = opts?.hideTag;
+  const tags = (t.tags || []).filter((x) => x !== hide).map((x) => `<span class="tag">#${esc(x)}</span>`).join('');
   const imp = t.claudeDecides
     ? `<span class="imp pending" title="Waiting for Claude to decide">${SPARKLE}Claude decides</span>`
     : `<span class="imp">${esc(t.importance || '')}</span>`;
@@ -412,24 +414,30 @@ function formTags(form) {
   return parseTags(field.querySelector('input[name=tags]').value);
 }
 
-function addTask(form) {
+function newTaskFrom(form) {
   const f = new FormData(form);
   const title = String(f.get('title') || '').trim();
-  if (!title) return;
-  const deadline = formDeadline(form);
-  write('tasks', {
+  if (!title) return null;
+  return {
     id: newId(),
     title: title.slice(0, 300),
-    description: '',
+    description: String(f.get('description') || '').trim(),
     tags: formTags(form),
     ...formImportance(form),
-    deadline,
+    deadline: formDeadline(form),
     status: 'open',
     sourcePick: '',
     createdAt: nowIso(),
     doneAt: '',
     deletedAt: '',
-  }, 'Added task');
+  };
+}
+
+function addTask(form) {
+  const rec = newTaskFrom(form);
+  if (!rec) return;
+  const title = rec.title;
+  write('tasks', rec, 'Added task');
   const keepOpen = form.classList.contains('always');
   render({ keepDrafts: false });
   toast(`Added “${title.slice(0, 40)}”`, { undo: true });
@@ -451,9 +459,17 @@ function viewTasks() {
     .slice(0, 40);
   const chips = ['all', 'urgent', ...(waiting ? ['~claude'] : []), ...tags];
   const chipLabel = (f) => (f === 'all' ? 'All' : f === 'urgent' ? 'Urgent' : f === '~claude' ? `✨ For Claude (${waiting})` : `#${esc(f)}`);
+  const byTag = prefs.taskLayout === 'tags';
+  const layout = `<div class="seg-tabs layout-switch" role="group" aria-label="Layout">${[['list', 'List'], ['tags', 'By tag']].map(([v, l]) =>
+    `<button type="button" data-act="task-layout" data-v="${v}" aria-pressed="${(byTag ? 'tags' : 'list') === v}">${l}</button>`).join('')}</div>`;
+  const listHtml = byTag
+    ? tagBoxes(list, filt)
+    : `<section class="card" style="padding:6px 20px">
+      <ul class="tasks">${list.map(taskRow).join('') || '<li class="empty">Nothing here.</li>'}</ul>
+    </section>`;
   return `
-  <div class="tasks-page">
-    <header class="page-head"><h1>Tasks</h1><span class="muted">${open.length} open</span></header>
+  <div class="tasks-page${byTag ? ' by-tag' : ''}">
+    <header class="page-head"><h1>Tasks</h1><div class="head-side"><span class="muted">${open.length} open</span>${layout}</div></header>
     <section class="card">
       ${quickForm({ open: true })}
     </section>
@@ -462,14 +478,45 @@ function viewTasks() {
         `<button type="button" data-act="task-filter" data-tag="${esc(f)}" aria-pressed="${filt === f}">${chipLabel(f)}</button>`).join('')}</div>
       ${sortControl()}
     </div>
-    <section class="card" style="padding:6px 20px">
-      <ul class="tasks">${list.map(taskRow).join('') || '<li class="empty">Nothing here.</li>'}</ul>
-    </section>
+    ${listHtml}
     <details class="card" style="margin-top:16px">
       <summary style="cursor:pointer">Completed (${done.length})</summary>
       <ul class="tasks" style="margin-top:8px">${done.map(taskRow).join('')}</ul>
     </details>
   </div>`;
+}
+
+// "By tag" layout: one box per tag (a task with two tags shows in both), plus "No tag".
+// Every box follows the page's sort and filter; its + opens a new task with that tag.
+const TAG_HUES = [18, 38, 82, 142, 172, 198, 222, 256, 288, 332];
+const tagHue = (tag) => {
+  let h = 0;
+  for (const ch of tag) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+  return TAG_HUES[h % TAG_HUES.length];
+};
+
+function tagBoxes(list, filt) {
+  const groups = new Map();
+  for (const t of list) {
+    const own = t.tags?.length ? t.tags : [''];
+    for (const g of own) {
+      if (filt !== 'all' && filt !== 'urgent' && filt !== '~claude' && g !== filt) continue;
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g).push(t);
+    }
+  }
+  const keys = [...groups.keys()].sort((a, b) => (a === '' ? 1 : b === '' ? -1 : a.localeCompare(b)));
+  if (!keys.length) return '<section class="card"><p class="empty" style="margin:0">Nothing here.</p></section>';
+  return `<div class="tag-boxes">${keys.map((g) => {
+    const items = groups.get(g);
+    const name = g ? `#${esc(g)}` : 'No tag';
+    const style = g ? ` style="--tint:hsl(${tagHue(g)} 55% 50%)"` : '';
+    return `<section class="card tag-box${g ? '' : ' untagged'}"${style}>
+      <div class="tb-head"><h3>${name}</h3><span class="tb-n">${items.length}</span>
+        <button type="button" class="tb-add" data-act="new-in-tag" data-tag="${esc(g)}" aria-label="New task in ${name}" title="New task in ${name}">+</button></div>
+      <ul class="tasks">${items.map((t) => taskRow(t, { hideTag: g })).join('')}</ul>
+    </section>`;
+  }).join('')}</div>`;
 }
 
 /* ---------- home ---------- */
@@ -754,6 +801,34 @@ function openEdit(id) {
   </form>`;
   dlg.showModal();
   if (window.matchMedia?.('(min-width: 901px)').matches) dlg.querySelector('input[name=title]').focus();
+}
+
+function openNewTask(tag = '') {
+  const dlg = $('#edit');
+  if (!dlg) return;
+  const where = tag ? ` in #${esc(tag)}` : '';
+  dlg.innerHTML = `<form id="edit-form" class="quick open always edit-form" data-new="1" autocomplete="off">
+    <div class="edit-head"><h2 id="edit-title">New task${where}</h2><button type="button" class="x" data-act="edit-close" aria-label="Close">×</button></div>
+    <label class="ef"><span class="lbl">Title</span><input name="title" required maxlength="300" placeholder="New task…"></label>
+    <label class="ef"><span class="lbl">Description</span><textarea name="description" rows="2" placeholder="Optional"></textarea></label>
+    <div class="q-more">${dateField()}${importanceSelect()}${tagField(tag ? [tag] : [])}</div>
+    <div class="edit-foot">
+      <span class="grow"></span>
+      <button type="button" class="ghost" data-act="edit-close">Cancel</button>
+      <button type="submit" class="primary">Add</button>
+    </div>
+  </form>`;
+  dlg.showModal();
+  dlg.querySelector('input[name=title]').focus();
+}
+
+function addFromDialog(form) {
+  const rec = newTaskFrom(form);
+  if (!rec) return;
+  write('tasks', rec, 'Added task');
+  closeEdit();
+  render();
+  toast(`Added “${rec.title.slice(0, 40)}”`, { undo: true });
 }
 
 function closeEdit() {
@@ -1302,6 +1377,8 @@ document.addEventListener('click', (e) => {
   const { act, id } = el.dataset;
   if (act === 'undo') return undoLast();
   if (act === 'sort') { prefs.sort = el.dataset.sort; savePrefs(); return render(); }
+  if (act === 'task-layout') { prefs.taskLayout = el.dataset.v === 'tags' ? 'tags' : 'list'; savePrefs(); return render(); }
+  if (act === 'new-in-tag') return openNewTask(el.dataset.tag || '');
   if (act === 'photo-open') return openPhoto();
   if (act === 'photo-close') return closePhoto();
   if (act === 'cigs-home') {
@@ -1446,7 +1523,7 @@ document.addEventListener('submit', (e) => {
   const form = e.target;
   if (form.dataset.pick) return taskFromPick(form, form.dataset.pick);
   if (form.dataset.form === 'quick') return addTask(form);
-  if (form.id === 'edit-form') return saveEdit(form);
+  if (form.id === 'edit-form') return form.dataset.new ? addFromDialog(form) : saveEdit(form);
   if (form.id === 'connect-form') return saveConnection(form);
   if (form.id === 'profile-form') return saveProfile(form);
   if (form.id === 'import-form') return importPicks(form);
