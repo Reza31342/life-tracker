@@ -342,9 +342,10 @@ html[data-theme=dark] .sw-ink{--swc:#EEE6D8}
   .tag-box .task > .x{grid-area:x}
 }
 /* ---------- task whiteboard ---------- */
-.board-page{display:grid;grid-template-columns:auto minmax(0,1fr);gap:14px;height:calc(100vh - 120px);min-height:420px}
-.bs{width:236px;display:flex;flex-direction:column;min-height:0;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:12px 10px 10px;overflow:auto}
-.bs:not([open]){width:auto;padding:12px}
+.board-page{display:grid;grid-template-columns:var(--side-w,236px) 14px minmax(0,1fr);height:calc(100vh - 120px);min-height:420px}
+.board-page:has(> .bs:not([open])){grid-template-columns:auto 14px minmax(0,1fr)}
+.bs{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:12px 10px 10px;overflow:auto}
+.bs:not([open]){padding:12px}
 .bs summary{display:flex;align-items:center;gap:8px;cursor:pointer;list-style:none;font-family:Fraunces,serif;font-size:19px;padding:0 4px 8px}
 .bs summary::-webkit-details-marker{display:none}
 .bs summary::after{content:"‹";margin-left:auto;color:var(--muted);font-family:system-ui}
@@ -360,22 +361,55 @@ html[data-theme=dark] .sw-ink{--swc:#EEE6D8}
 .bs-chip[data-placed]{opacity:.45}
 .bs-hint{margin:auto 4px 0;padding-top:8px;font-size:11px;color:var(--muted)}
 .bs-ghost{position:fixed;z-index:60;pointer-events:none;max-width:220px;font-size:12px;padding:5px 9px;border-radius:8px;background:var(--card);border:1px solid var(--clay);box-shadow:0 10px 24px -10px rgba(0,0,0,.45);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* the divider between the list and the board: drag it, arrow keys, double-click to reset */
+.bs-split{position:relative;cursor:col-resize;touch-action:none;outline:none}
+.bs-split::before{content:"";position:absolute;left:50%;top:50%;width:4px;height:46px;margin:-23px 0 0 -2px;border-radius:3px;background:var(--line);transition:background .15s}
+.bs-split:hover::before,.bs-split:focus-visible::before,.bs-split.dragging::before{background:var(--clay)}
+.board-page:has(> .bs:not([open])) .bs-split{pointer-events:none}
+.board-page:has(> .bs:not([open])) .bs-split::before{display:none}
 .board-wrap{position:relative;min-width:0;min-height:0;display:flex}
 .board{flex:1;position:relative;overflow:hidden;border-radius:18px;border:1px solid var(--line);background-color:var(--card);background-image:radial-gradient(circle,color-mix(in srgb,var(--muted) 38%,transparent) 1px,transparent 1.3px);touch-action:none;cursor:grab;outline:none}
 .board:active{cursor:grabbing}
-.board-tools{position:absolute;top:10px;left:10px;z-index:3;display:flex;align-items:center;gap:4px;padding:4px;background:color-mix(in srgb,var(--card) 92%,transparent);border:1px solid var(--line);border-radius:999px;box-shadow:0 6px 16px -10px rgba(0,0,0,.3)}
-.board-tools button{border:0;background:transparent;border-radius:999px;padding:5px 10px;font-size:13px;cursor:pointer;color:var(--ink)}
-.board-tools button:hover{background:var(--bg)}
+.board.pen-on,.board.pen-on:active{cursor:crosshair}
+.board.erasing,.board.erasing:active{cursor:cell}
+.board-top{position:absolute;top:10px;left:10px;right:10px;z-index:3;display:flex;flex-direction:column;align-items:flex-start;gap:6px;pointer-events:none}
+.board-wrap{touch-action:none}
+.board-tools,.pen-panel,.b-style{pointer-events:auto;display:flex;align-items:center;gap:4px;padding:4px;background:color-mix(in srgb,var(--card) 94%,transparent);border:1px solid var(--line);border-radius:999px;box-shadow:0 6px 16px -10px rgba(0,0,0,.3)}
+.pen-panel[hidden],.b-style[hidden]{display:none}
+.board-tools button,.pen-panel button{border:0;background:transparent;border-radius:999px;padding:5px 10px;font-size:13px;cursor:pointer;color:var(--ink)}
+.board-tools button:hover,.pen-panel button:hover{background:var(--bg)}
+.board-tools button[aria-pressed=true],.pen-panel [data-btool=eraser][aria-pressed=true]{background:var(--strong);color:var(--on-strong)}
+.pen-panel .pen-done{font-weight:600}
 .bt-sep{width:1px;height:18px;background:var(--line);margin:0 2px}
 .bt-zoom{font-size:12px;color:var(--muted);min-width:40px;text-align:center}
+.sws{display:flex;gap:3px;align-items:center}
+.sw{width:20px;height:20px;padding:0 !important;border-radius:50% !important;border:2px solid var(--card) !important;background:var(--c) !important;box-shadow:0 0 0 1px var(--line);cursor:pointer}
+.sw.sw-plain{background:var(--card) !important;box-shadow:0 0 0 1px var(--muted)}
+.sw[aria-pressed=true]{box-shadow:0 0 0 2px var(--ink)}
+.pw{display:grid !important;place-items:center;width:28px;height:28px;padding:0 !important}
+.pw i{display:block;border-radius:50%;background:var(--ink)}
+.pw[aria-pressed=true]{background:var(--bg) !important;box-shadow:inset 0 0 0 1px var(--ink)}
+.b-style{position:absolute;z-index:4;flex-direction:column;align-items:stretch;gap:6px;border-radius:14px;padding:7px 8px}
+.szs{display:flex;gap:2px}
+.szs button{border:0;background:transparent;border-radius:7px;min-width:26px;height:24px;padding:0 5px;font-size:12px;color:var(--ink);cursor:pointer}
+.szs button:hover{background:var(--bg)}
+.szs button[aria-pressed=true]{background:var(--strong);color:var(--on-strong)}
 .board-world{position:absolute;left:0;top:0;transform-origin:0 0;--z:1}
-.board-links{position:absolute;left:0;top:0;width:1px;height:1px;overflow:visible;pointer-events:none}
+.board-links,.board-ink{position:absolute;left:0;top:0;width:1px;height:1px;overflow:visible;pointer-events:none}
 .board-links marker path{fill:var(--muted)}
 .board-links marker.sel path{fill:var(--clay)}
 .bl-hit{stroke:transparent;stroke-width:16;pointer-events:stroke;cursor:pointer;vector-effect:non-scaling-stroke}
 .bl-line{stroke:var(--muted);stroke-width:1.6;fill:none;vector-effect:non-scaling-stroke}
 .bl.sel .bl-line{stroke:var(--clay);stroke-width:2.2}
 .bl-temp{stroke:var(--clay);stroke-dasharray:5 4}
+/* pen drawings sit on top of everything */
+.ink-v{fill:none;stroke:var(--c,var(--ink));stroke-linecap:round;stroke-linejoin:round}
+.ink-hit{fill:none;stroke:transparent;stroke-linecap:round;stroke-linejoin:round;pointer-events:stroke;cursor:pointer}
+.board.pen-on .ink-hit{pointer-events:none}
+/* with the pen or eraser on, cards and arrows ignore the pointer, so you can draw over anything */
+.board.pen-on .bi,.board.erasing .bi,.board.pen-on .bl-hit,.board.erasing .bl-hit{pointer-events:none}
+.board.erasing .ink-hit{cursor:cell}
+.ink.sel .ink-v{filter:drop-shadow(0 0 2px var(--clay)) drop-shadow(0 0 1px var(--clay))}
 .bl-del{position:absolute;width:24px;height:24px;border-radius:50%;border:1px solid var(--clay);background:var(--card);color:var(--clay);font-size:15px;line-height:1;cursor:pointer;transform:translate(-50%,-50%) scale(calc(1 / var(--z)));z-index:4}
 .bi{position:absolute;width:190px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:8px 10px;box-shadow:0 8px 20px -14px rgba(0,0,0,.45);cursor:grab;user-select:none;-webkit-user-select:none;display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px;align-items:start}
 .bi-task{border-left:3px solid color-mix(in srgb,var(--tint,var(--muted)) 65%,var(--card))}
@@ -388,19 +422,25 @@ html[data-theme=dark] .sw-ink{--swc:#EEE6D8}
 .bi-meta .due{font-size:10px;padding:0 6px}
 .bi-imp{font-size:10px;font-weight:700;letter-spacing:.04em;color:var(--must)}
 .bi-note{margin-top:6px;padding-top:5px;border-top:1px dashed var(--line);font-size:12px;color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere}
+.bi-task .bi-edit{font-size:12px}
+/* notes and text: colour (--c) and size (--fs) come from the item */
 .bi-sticky,.bi-label{display:block}
-.bi-sticky{width:180px;background:color-mix(in srgb,#e9c46a 24%,var(--card));border-color:color-mix(in srgb,#e9c46a 45%,var(--line))}
-.bi-label{width:max-content;min-width:60px;max-width:340px;background:transparent;border-color:transparent;box-shadow:none;padding:4px 6px}
-.bi-text{font-size:14px;line-height:1.4;white-space:pre-wrap;overflow-wrap:break-word;min-height:1.4em}
-.bi-label .bi-text{font-family:Fraunces,serif;font-size:21px;line-height:1.25}
+.bi-sticky{width:max-content;min-width:110px;max-width:max(180px,18em);font-size:var(--fs,12px);padding:.7em .85em;background:color-mix(in srgb,var(--c,#d4a017) 20%,var(--card));border-color:color-mix(in srgb,var(--c,#d4a017) 42%,var(--line))}
+.bi-sticky.plain{background:var(--card);border-color:var(--line)}
+.bi-label{width:max-content;min-width:40px;max-width:max(340px,20em);font-size:var(--fs,16px);background:transparent;border-color:transparent;box-shadow:none;padding:4px 6px}
+.bi-text{font-size:1em;line-height:1.4;white-space:pre-wrap;overflow-wrap:break-word;min-height:1.4em}
+.bi-label .bi-text{font-family:Fraunces,serif;line-height:1.25;color:color-mix(in srgb,var(--c,var(--ink)) 88%,var(--ink))}
+.bi-label.plain .bi-text{color:var(--ink)}
 .bi.sel{outline:2px solid var(--clay);outline-offset:2px}
 .bi.drop{outline:2px dashed var(--clay);outline-offset:3px}
 .bi.editing{cursor:text}
-.bi-edit{display:block;width:100%;min-width:140px;box-sizing:border-box;font:inherit;font-size:13px;line-height:1.4;color:inherit;background:color-mix(in srgb,var(--bg) 60%,transparent);border:0;border-radius:6px;padding:4px 5px;margin-top:4px;resize:none;outline:1px solid var(--line);overflow:hidden}
-.bi-label .bi-edit{font-family:Fraunces,serif;font-size:21px;min-width:220px}
+.bi-edit{display:block;width:100%;min-width:140px;box-sizing:border-box;font:inherit;font-size:1em;line-height:1.4;color:inherit;background:color-mix(in srgb,var(--bg) 60%,transparent);border:0;border-radius:6px;padding:4px 5px;margin-top:2px;resize:none;outline:1px solid var(--line);overflow:hidden}
+.bi-label .bi-edit{font-family:Fraunces,serif;min-width:12em}
+.bi-sticky .bi-edit{min-width:12em}
 .bi-handle{position:absolute;right:-7px;top:50%;width:12px;height:12px;margin-top:-6px;border-radius:50%;background:var(--card);border:2px solid var(--clay);opacity:0;cursor:crosshair;transition:opacity .12s;transform:scale(calc(1 / max(var(--z), .6)))}
 .bi:hover .bi-handle,.bi.sel .bi-handle{opacity:1}
-.bi-bar{position:absolute;left:-2px;bottom:100%;display:none;gap:4px;padding-bottom:6px;transform-origin:0 100%;transform:scale(calc(1 / var(--z)));white-space:nowrap}
+.board.pen-on .bi-handle,.board.erasing .bi-handle{display:none}
+.bi-bar{position:absolute;left:-2px;bottom:100%;display:none;gap:4px;padding-bottom:6px;transform-origin:0 100%;transform:scale(calc(1 / var(--z)));white-space:nowrap;font-size:12px}
 .bi.sel .bi-bar{display:flex}
 .bi.editing .bi-bar{display:none}
 .bi-bar button{border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:999px;padding:3px 10px;font-size:12px;cursor:pointer;box-shadow:0 4px 10px -6px rgba(0,0,0,.35)}
@@ -415,15 +455,24 @@ html[data-theme=dark] .sw-ink{--swc:#EEE6D8}
   body[data-route=board] .board-page{flex:1;height:auto;min-height:0}
 }
 @media (max-width:900px){
-  .board-page{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);height:calc(100dvh - 190px);min-height:460px}
-  .bs{width:auto;max-height:32vh}
+  .board-page{grid-template-columns:minmax(0,1fr);grid-template-rows:var(--side-h,30vh) 14px minmax(0,1fr);height:calc(100dvh - 190px);min-height:460px}
+  .board-page:has(> .bs:not([open])){grid-template-columns:minmax(0,1fr);grid-template-rows:auto 14px minmax(0,1fr)}
   .bs:not([open]){padding:10px 12px}
   .bs:not([open]) summary{writing-mode:horizontal-tb}
   .bs summary::after{content:"⌃"}
   .bs:not([open]) summary::after{content:"⌄"}
   .bs-groups{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:0 10px}
   .bs-hint{display:none}
-  .board-tools{flex-wrap:wrap;right:10px;justify-content:flex-start;border-radius:16px}
+  .bs-split{cursor:row-resize}
+  .bs-split::before{width:46px;height:4px;margin:-2px 0 0 -23px}
+  /* one compact row each; slide sideways if it doesn't fit */
+  .board-tools,.pen-panel{flex-wrap:nowrap;max-width:100%;overflow-x:auto;scrollbar-width:none;touch-action:pan-x}
+  .board-tools::-webkit-scrollbar,.pen-panel::-webkit-scrollbar{display:none}
+  .board-tools button,.pen-panel button{padding:4px 8px;font-size:12px;flex:none}
+  .bt-zoom{min-width:34px;flex:none}
+  .sws{flex:none}
+  .sw{width:18px;height:18px}
+  .pw{width:24px;height:24px}
 }
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .trends .card{min-width:0}

@@ -8,7 +8,10 @@ import { syncOnce } from './sync.js';
 import { typed, longDate, weekdayOf } from './dates.js';
 import { parseRanges, rangesTotal, parseDuration, fmtHM } from './time.js';
 import { UndoHistory } from './undo.js';
-import { BOARD_KEY, BOARD_MAX, parseBoard, serializeBoard, mountBoard } from './board.js';
+import {
+  BOARD_KEY, INK_KEY, BOARD_MAX, PALETTE, SIZES, DEFAULTS, PEN_WIDTHS,
+  parseBoard, serializeBoard, parseInk, serializeInk, mountBoard,
+} from './board.js';
 
 
 const store = new Store(localStorage);
@@ -19,7 +22,7 @@ const ui = { pickTab: 'current', pickKind: 'paper', openPick: null, taskTag: 'al
 // Look and task sort order: per device, not synced.
 const PREFS_KEY = 'life-tracker.prefs';
 const prefs = (() => {
-  const base = { theme: 'light', accent: 'ink', sort: 'urgency', taskLayout: 'list', boardView: { x: 40, y: 40, z: 1 } };
+  const base = { theme: 'light', accent: 'ink', sort: 'urgency', taskLayout: 'list', boardView: { x: 40, y: 40, z: 1 }, boardPen: { c: 'ink', w: 4 }, boardSide: null };
   try { return { ...base, ...JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') }; } catch { return base; }
 })();
 const savePrefs = () => { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch { /* storage full */ } };
@@ -1277,6 +1280,10 @@ function exportBackup() {
 /* ---------- task whiteboard ---------- */
 
 const readBoard = () => parseBoard(store.setting(BOARD_KEY, ''));
+const readInk = () => parseInk(store.setting(INK_KEY, ''));
+const COLOR_NAMES = { ink: 'Plain', yellow: 'Yellow', orange: 'Orange', pink: 'Pink', blue: 'Blue', green: 'Green', purple: 'Purple', gray: 'Gray' };
+const swatches = (attr) => Object.keys(PALETTE).map((k) =>
+  `<button type="button" class="sw${k === 'ink' ? ' sw-plain' : ''}" data-${attr}="${k}" style="--c:${PALETTE[k] || 'var(--ink)'}" title="${COLOR_NAMES[k]}" aria-label="${COLOR_NAMES[k]}"></button>`).join('');
 let boardCtl = null;
 
 function boardItemHtml(it, tasks = taskMap()) {
@@ -1298,8 +1305,11 @@ function boardItemHtml(it, tasks = taskMap()) {
       ${handle}
     </div>`;
   }
-  const cls = it.type === 'note' ? 'bi-sticky' : 'bi-label';
-  return `<div class="bi ${cls}" data-id="${esc(it.id)}" style="${pos}">
+  const d = DEFAULTS[it.type];
+  const color = it.color || d.color;
+  const cls = `${it.type === 'note' ? 'bi-sticky' : 'bi-label'}${color === 'ink' ? ' plain' : ''}`;
+  const look = `${PALETTE[color] ? `;--c:${PALETTE[color]}` : ''};--fs:${it.size || d.size}px`;
+  return `<div class="bi ${cls}" data-id="${esc(it.id)}" style="${pos}${look}">
     ${bar([['edit', 'Edit', 'Edit the text'], ['delete', 'Delete', 'Delete']])}
     <div class="bi-body"><div class="bi-text">${esc(it.text || '')}</div></div>
     ${handle}
@@ -1325,21 +1335,39 @@ function viewBoard() {
         <span class="bs-t">${esc(t.title)}</span>${dueChip(t.deadline)}</li>`).join('')}</ul>
     </section>`).join('') || '<p class="muted small">No open tasks.</p>';
   const sideOpen = ui.boardSide ?? true;
-  return `<div class="board-page">
+  const sz = prefs.boardSide || {};
+  const sideVars = `${sz.w ? `--side-w:${sz.w}px;` : ''}${sz.h ? `--side-h:${sz.h}px;` : ''}`;
+  return `<div class="board-page"${sideVars ? ` style="${sideVars}"` : ''}>
     <details class="bs"${sideOpen ? ' open' : ''}>
       <summary><span>Tasks</span><span class="bs-n">${open.length}</span></summary>
       <div class="bs-groups">${side}</div>
       <p class="bs-hint">Drag a task onto the board, or tap it to drop it in the middle.</p>
     </details>
+    <div class="bs-split" role="separator" aria-label="Resize the task list (double-click to reset)" tabindex="0"></div>
     <div class="board-wrap">
+      <div class="board-top">
       <div class="board-tools" role="toolbar" aria-label="Board">
         <button type="button" data-btool="note">+ Note</button>
         <button type="button" data-btool="text">+ Text</button>
+        <button type="button" data-btool="pen" aria-pressed="false">✎ Pen</button>
         <span class="bt-sep"></span>
         <button type="button" data-btool="zoom-out" aria-label="Zoom out">−</button>
         <span class="bt-zoom" data-bzoom-label>100%</span>
         <button type="button" data-btool="zoom-in" aria-label="Zoom in">+</button>
         <button type="button" data-btool="fit">Fit</button>
+      </div>
+      <div class="pen-panel" hidden role="toolbar" aria-label="Pen">
+        <div class="sws">${swatches('pen-color')}</div>
+        <span class="bt-sep"></span>
+        ${PEN_WIDTHS.map((w) => `<button type="button" class="pw" data-pen-w="${w}" aria-label="Line ${w}" title="Line ${w}"><i style="width:${w + 3}px;height:${w + 3}px"></i></button>`).join('')}
+        <span class="bt-sep"></span>
+        <button type="button" data-btool="eraser" aria-pressed="false">Eraser</button>
+        <button type="button" class="pen-done" data-btool="select">Done</button>
+      </div>
+      </div>
+      <div class="b-style" hidden role="toolbar" aria-label="Note style">
+        <div class="sws">${swatches('style-color')}</div>
+        <div class="szs">${SIZES.map((n) => `<button type="button" data-style-size="${n}" title="${n} px">${n}</button>`).join('')}</div>
       </div>
       <div class="board" id="board">
         <div class="board-world">
@@ -1348,9 +1376,10 @@ function viewBoard() {
             <marker id="bArrowSel" class="sel" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
           </defs><g data-links></g></svg>
           ${board.items.map((it) => boardItemHtml(it, tasks)).join('')}
+          <svg class="board-ink" aria-hidden="true"><g data-inks></g><path class="ink-v ink-live" d=""/></svg>
           <button type="button" class="bl-del" hidden aria-label="Delete arrow">×</button>
         </div>
-        ${board.items.length ? '' : `<div class="board-empty"><p>Drag tasks here from the list.</p><p class="muted small">Move them around, add notes and text, and draw arrows from a card's dot to another card. Drag the background to move, pinch or Ctrl + scroll to zoom.</p></div>`}
+        ${board.items.length || readInk().strokes.length ? '' : `<div class="board-empty"><p>Drag tasks here from the list.</p><p class="muted small">Move them around, add notes and text, draw arrows from a card's dot to another card, or write with the pen. Drag the background to move, pinch or Ctrl + scroll to zoom.</p></div>`}
       </div>
     </div>
   </div>`;
@@ -1361,20 +1390,23 @@ function mountBoardPage() {
   const root = document.querySelector('.board-page');
   if (!root) { boardCtl = null; return; }
   root.querySelector('details.bs')?.addEventListener('toggle', (e) => { ui.boardSide = e.target.open; });
+  const store1 = (key, json, label, full) => {
+    if (json.length > BOARD_MAX) { toast(full); return false; }
+    write('settings', { key, value: json }, label);
+    undo.seal();
+    root.querySelector('.board-empty')?.remove();
+    return true;
+  };
   boardCtl = mountBoard(root, {
     board: readBoard(),
+    ink: readInk(),
     view: prefs.boardView || { x: 40, y: 40, z: 1 },
-    save(next, label) {
-      const json = serializeBoard(next);
-      if (json.length > BOARD_MAX) {
-        toast('The board is full. Remove a few notes or cards to add more.');
-        return false;
-      }
-      write('settings', { key: BOARD_KEY, value: json }, label);
-      undo.seal();
-      root.querySelector('.board-empty')?.remove();
-      return true;
-    },
+    pen: prefs.boardPen || { c: 'ink', w: 4 },
+    side: prefs.boardSide || null,
+    save: (next, label) => store1(BOARD_KEY, serializeBoard(next), label, 'The board is full. Remove a few notes or cards to add more.'),
+    saveInk: (next, label) => store1(INK_KEY, serializeInk(next), label, 'There is no room for more drawing. Erase some first.'),
+    savePen(p) { prefs.boardPen = p; savePrefs(); },
+    saveSide(sz) { prefs.boardSide = sz; savePrefs(); },
     saveView(v) {
       prefs.boardView = { x: Math.round(v.x), y: Math.round(v.y), z: +v.z.toFixed(3) };
       clearTimeout(viewSaveTimer);
