@@ -507,16 +507,36 @@ function tagBoxes(list, filt) {
   }
   const keys = [...groups.keys()].sort((a, b) => (a === '' ? 1 : b === '' ? -1 : a.localeCompare(b)));
   if (!keys.length) return '<section class="card"><p class="empty" style="margin:0">Nothing here.</p></section>';
-  return `<div class="tag-boxes">${keys.map((g) => {
+  return `<div class="tag-boxes">${keys.map((g, i) => {
     const items = groups.get(g);
     const name = g ? `#${esc(g)}` : 'No tag';
     const style = g ? ` style="--tint:hsl(${tagHue(g)} 55% 50%)"` : '';
-    return `<section class="card tag-box${g ? '' : ' untagged'}"${style}>
+    return `<section class="card tag-box${g ? '' : ' untagged'}" data-i="${i}"${style}>
       <div class="tb-head"><h3>${name}</h3><span class="tb-n">${items.length}</span>
         <button type="button" class="tb-add" data-act="new-in-tag" data-tag="${esc(g)}" aria-label="New task in ${name}" title="New task in ${name}">+</button></div>
       <ul class="tasks">${items.map((t) => taskRow(t, { hideTag: g })).join('')}</ul>
     </section>`;
   }).join('')}</div>`;
+}
+
+// Spreads the boxes over as many columns as fit (each at least 320px wide). In alphabetical order,
+// each box goes under the column that is shortest so far, so there are no gaps and the columns
+// end up close in height. Runs after every render and when the window size changes.
+function layoutTagBoxes() {
+  const wrap = document.querySelector('.tag-boxes');
+  if (!wrap) return;
+  const boxes = [...wrap.querySelectorAll('.tag-box')].sort((a, b) => a.dataset.i - b.dataset.i);
+  const gap = 16;
+  const n = Math.max(1, Math.floor((wrap.clientWidth + gap) / (320 + gap)));
+  const cols = Array.from({ length: n }, () => Object.assign(document.createElement('div'), { className: 'tb-col' }));
+  wrap.style.setProperty('--n', n);
+  wrap.replaceChildren(...cols);
+  const heights = new Array(n).fill(0);
+  for (const box of boxes) {
+    const i = heights.indexOf(Math.min(...heights));
+    cols[i].append(box);
+    heights[i] += box.offsetHeight + gap;
+  }
 }
 
 /* ---------- home ---------- */
@@ -1323,6 +1343,7 @@ function render({ keepDrafts = true } = {}) {
   paintUndo();
   paintCounts();
   fitHomeNote();
+  layoutTagBoxes();
 }
 
 // Keeps the Home card's sentence on the lines it was written in: the font shrinks (down to 11px)
@@ -1340,7 +1361,10 @@ function fitHomeNote() {
   if (p.scrollWidth > p.clientWidth + 0.5) p.classList.remove('fit');
 }
 let fitFrame = 0;
-const refit = () => { cancelAnimationFrame(fitFrame); fitFrame = requestAnimationFrame(fitHomeNote); };
+const refit = () => {
+  cancelAnimationFrame(fitFrame);
+  fitFrame = requestAnimationFrame(() => { fitHomeNote(); layoutTagBoxes(); });
+};
 window.addEventListener('resize', refit);
 if (document.fonts) {
   document.fonts.ready.then(refit);

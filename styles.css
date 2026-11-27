@@ -320,7 +320,9 @@ html[data-theme=dark] .sw-ink{--swc:#EEE6D8}
 .tasks-page.by-tag{max-width:1240px}
 .head-side{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
 /* By tag: one tinted box per tag; the tint comes from --tint, set per tag */
-.tag-boxes{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px;align-items:start}
+/* Columns of boxes (see layoutTagBoxes): each box sits right under the one above it */
+.tag-boxes{display:grid;grid-template-columns:repeat(var(--n,1),minmax(0,1fr));gap:16px;align-items:start}
+.tb-col{display:flex;flex-direction:column;gap:16px;min-width:0}
 .tag-box{--tint:var(--muted);container-type:inline-size;padding:14px 16px 8px;background:color-mix(in srgb,var(--tint) 7%,var(--card));border-top:3px solid color-mix(in srgb,var(--tint) 60%,var(--card))}
 .tag-box.untagged{border-top-style:dashed}
 .tb-head{display:flex;align-items:center;gap:8px;padding-bottom:6px}
