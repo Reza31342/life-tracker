@@ -8,6 +8,7 @@ import { syncOnce } from './sync.js';
 import { typed, longDate, weekdayOf } from './dates.js';
 import { parseRanges, rangesTotal, parseDuration, fmtHM } from './time.js';
 import { UndoHistory } from './undo.js';
+import { BOARD_KEY, BOARD_MAX, parseBoard, serializeBoard, mountBoard } from './board.js';
 
 
 const store = new Store(localStorage);
@@ -18,7 +19,7 @@ const ui = { pickTab: 'current', pickKind: 'paper', openPick: null, taskTag: 'al
 // Look and task sort order: per device, not synced.
 const PREFS_KEY = 'life-tracker.prefs';
 const prefs = (() => {
-  const base = { theme: 'light', accent: 'ink', sort: 'urgency', taskLayout: 'list' };
+  const base = { theme: 'light', accent: 'ink', sort: 'urgency', taskLayout: 'list', boardView: { x: 40, y: 40, z: 1 } };
   try { return { ...base, ...JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') }; } catch { return base; }
 })();
 const savePrefs = () => { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch { /* storage full */ } };
@@ -1273,9 +1274,126 @@ function exportBackup() {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
+/* ---------- task whiteboard ---------- */
+
+const readBoard = () => parseBoard(store.setting(BOARD_KEY, ''));
+let boardCtl = null;
+
+function boardItemHtml(it, tasks = taskMap()) {
+  const pos = `left:${it.x}px;top:${it.y}px`;
+  const bar = (btns) => `<div class="bi-bar">${btns.map(([a, l, t]) => `<button type="button" data-bact="${a}" title="${t}">${l}</button>`).join('')}</div>`;
+  const handle = '<span class="bi-handle" title="Drag onto another card to draw an arrow"></span>';
+  if (it.type === 'task') {
+    const t = tasks.get(it.task);
+    if (!t) return ''; // deleted task: its card (and arrows) stay saved but hidden
+    const done = t.status === 'done';
+    const tint = t.tags?.length ? ` style="${pos};--tint:hsl(${tagHue(t.tags[0])} 55% 50%)"` : ` style="${pos}"`;
+    const imp = t.claudeDecides ? 'Claude decides' : t.importance === 'MUST DO' ? 'MUST DO' : '';
+    return `<div class="bi bi-task${done ? ' done' : ''}${!done && urgency(t) === 0 ? ' overdue' : ''}" data-id="${esc(it.id)}"${tint}>
+      ${bar([['edit', it.note ? 'Edit note' : 'Note', 'Write a note on this card'], ['open', 'Open', 'Open the task'], ['delete', 'Remove', 'Take it off the board (the task stays)']])}
+      <input type="checkbox" data-done="${esc(t.id)}"${done ? ' checked' : ''} aria-label="Done: ${esc(t.title)}">
+      <div class="bi-body"><div class="bi-title">${esc(t.title)}</div>
+        <div class="bi-meta">${done ? '' : dueChip(t.deadline)}${imp ? `<span class="bi-imp">${esc(imp)}</span>` : ''}</div>
+        ${it.note ? `<div class="bi-note">${esc(it.note)}</div>` : ''}</div>
+      ${handle}
+    </div>`;
+  }
+  const cls = it.type === 'note' ? 'bi-sticky' : 'bi-label';
+  return `<div class="bi ${cls}" data-id="${esc(it.id)}" style="${pos}">
+    ${bar([['edit', 'Edit', 'Edit the text'], ['delete', 'Delete', 'Delete']])}
+    <div class="bi-body"><div class="bi-text">${esc(it.text || '')}</div></div>
+    ${handle}
+  </div>`;
+}
+
+const taskMap = () => new Map(liveTasks().map((t) => [t.id, t]));
+
+function viewBoard() {
+  const tasks = taskMap();
+  const board = readBoard();
+  const placed = new Set(board.items.filter((it) => it.type === 'task').map((it) => it.task));
+  const open = sortTasks(liveTasks().filter((t) => t.status !== 'done'));
+  const groups = new Map();
+  for (const t of open) for (const g of (t.tags?.length ? t.tags : [''])) {
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(t);
+  }
+  const keys = [...groups.keys()].sort((a, b) => (a === '' ? 1 : b === '' ? -1 : a.localeCompare(b)));
+  const side = keys.map((g) => `<section class="bs-group"${g ? ` style="--tint:hsl(${tagHue(g)} 55% 50%)"` : ''}>
+      <h3>${g ? `#${esc(g)}` : 'No tag'}</h3>
+      <ul>${groups.get(g).map((t) => `<li class="bs-chip" data-task="${esc(t.id)}"${placed.has(t.id) ? ' data-placed' : ''} title="${esc(t.title)}">
+        <span class="bs-t">${esc(t.title)}</span>${dueChip(t.deadline)}</li>`).join('')}</ul>
+    </section>`).join('') || '<p class="muted small">No open tasks.</p>';
+  const sideOpen = ui.boardSide ?? true;
+  return `<div class="board-page">
+    <details class="bs"${sideOpen ? ' open' : ''}>
+      <summary><span>Tasks</span><span class="bs-n">${open.length}</span></summary>
+      <div class="bs-groups">${side}</div>
+      <p class="bs-hint">Drag a task onto the board, or tap it to drop it in the middle.</p>
+    </details>
+    <div class="board-wrap">
+      <div class="board-tools" role="toolbar" aria-label="Board">
+        <button type="button" data-btool="note">+ Note</button>
+        <button type="button" data-btool="text">+ Text</button>
+        <span class="bt-sep"></span>
+        <button type="button" data-btool="zoom-out" aria-label="Zoom out">−</button>
+        <span class="bt-zoom" data-bzoom-label>100%</span>
+        <button type="button" data-btool="zoom-in" aria-label="Zoom in">+</button>
+        <button type="button" data-btool="fit">Fit</button>
+      </div>
+      <div class="board" id="board">
+        <div class="board-world">
+          <svg class="board-links" aria-hidden="true"><defs>
+            <marker id="bArrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+            <marker id="bArrowSel" class="sel" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+          </defs><g data-links></g></svg>
+          ${board.items.map((it) => boardItemHtml(it, tasks)).join('')}
+          <button type="button" class="bl-del" hidden aria-label="Delete arrow">×</button>
+        </div>
+        ${board.items.length ? '' : `<div class="board-empty"><p>Drag tasks here from the list.</p><p class="muted small">Move them around, add notes and text, and draw arrows from a card's dot to another card. Drag the background to move, pinch or Ctrl + scroll to zoom.</p></div>`}
+      </div>
+    </div>
+  </div>`;
+}
+
+let viewSaveTimer = 0;
+function mountBoardPage() {
+  const root = document.querySelector('.board-page');
+  if (!root) { boardCtl = null; return; }
+  root.querySelector('details.bs')?.addEventListener('toggle', (e) => { ui.boardSide = e.target.open; });
+  boardCtl = mountBoard(root, {
+    board: readBoard(),
+    view: prefs.boardView || { x: 40, y: 40, z: 1 },
+    save(next, label) {
+      const json = serializeBoard(next);
+      if (json.length > BOARD_MAX) {
+        toast('The board is full. Remove a few notes or cards to add more.');
+        return false;
+      }
+      write('settings', { key: BOARD_KEY, value: json }, label);
+      undo.seal();
+      root.querySelector('.board-empty')?.remove();
+      return true;
+    },
+    saveView(v) {
+      prefs.boardView = { x: Math.round(v.x), y: Math.round(v.y), z: +v.z.toFixed(3) };
+      clearTimeout(viewSaveTimer);
+      viewSaveTimer = setTimeout(savePrefs, 400);
+    },
+    openTask: (id) => openEdit(id),
+    renderItem: (it) => boardItemHtml(it),
+    markPlaced(set) {
+      root.querySelectorAll('.bs-chip').forEach((c) => c.toggleAttribute('data-placed', set.has(c.dataset.task)));
+    },
+    idle() {
+      if (deferredRender) setTimeout(() => { if (!editingInView()) render(); }, 60);
+    },
+  });
+}
+
 /* ---------- shell ---------- */
 
-const VIEWS = { home: viewHome, tasks: viewTasks, picks: viewPicks, trends: viewTrends, settings: viewSettings };
+const VIEWS = { home: viewHome, tasks: viewTasks, board: viewBoard, picks: viewPicks, trends: viewTrends, settings: viewSettings };
 
 function currentRoute() {
   const h = location.hash.slice(1);
@@ -1288,7 +1406,7 @@ const hasDraft = () => [...document.querySelectorAll('#view form.quick input[nam
 const editingInView = () => {
   const a = document.activeElement;
   const inForm = !!a && !!a.closest?.('#view') && (/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) || !!a.closest('form'));
-  return inForm || hasDraft();
+  return inForm || hasDraft() || !!boardCtl?.busy();
 };
 let deferredRender = false;
 
@@ -1344,6 +1462,7 @@ function render({ keepDrafts = true } = {}) {
   paintCounts();
   fitHomeNote();
   layoutTagBoxes();
+  mountBoardPage();
 }
 
 // Keeps the Home card's sentence on the lines it was written in: the font shrinks (down to 11px)

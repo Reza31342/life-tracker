@@ -1,8 +1,8 @@
 // Offline shell cache. Requests to the sheet script are cross-origin and never cached here.
-const CACHE = 'life-tracker-v18';
+const CACHE = 'life-tracker-v19';
 const ASSETS = [
   './', './index.html', './styles.css', './manifest.webmanifest', './icon.svg',
-  './app.js', './store.js', './schema.js', './bridge.js', './sync.js', './dates.js', './undo.js', './time.js',
+  './app.js', './store.js', './schema.js', './bridge.js', './sync.js', './dates.js', './undo.js', './board.js', './time.js',
 ];
 
 self.addEventListener('install', (e) => {
